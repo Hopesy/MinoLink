@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-MinoLink-0061c545-1fd8-44a0-a86c-8bd375125b3d</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MinoLink.Core\MinoLink.Core.csproj" />
+    <ProjectReference Include="..\MinoLink.ClaudeCode\MinoLink.ClaudeCode.csproj" />
+    <ProjectReference Include="..\MinoLink.Feishu\MinoLink.Feishu.csproj" />
+  </ItemGroup>
+</Project>
