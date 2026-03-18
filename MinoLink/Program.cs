@@ -22,7 +22,6 @@ builder.Services.AddSingleton<IAgent>(sp =>
     var logger = sp.GetRequiredService<ILogger<ClaudeCodeAgent>>();
     return new ClaudeCodeAgent(new AgentOptions
     {
-        WorkDir = config.Agent.WorkDir,
         Model = config.Agent.Model,
         Mode = config.Agent.Mode ?? "default",
     }, logger);
@@ -49,7 +48,7 @@ builder.Services.AddSingleton<Engine>(sp =>
     var agent = sp.GetRequiredService<IAgent>();
     var platforms = sp.GetServices<IPlatform>();
     var logger = sp.GetRequiredService<ILogger<Engine>>();
-    return new Engine(config.ProjectName ?? "default", agent, platforms, logger);
+    return new Engine(config.ProjectName ?? "default", agent, platforms, config.Agent.WorkDir, logger);
 });
 
 // 注册 HostedService

@@ -24,17 +24,19 @@ public sealed class ClaudeSession : IAgentSession
     private Process? _process;
     private StreamWriter? _stdin;
     private string _sessionId;
+    private readonly bool _useContinue;
 
     public string SessionId => _sessionId;
     public ChannelReader<AgentEvent> Events => _eventChannel.Reader;
 
-    public ClaudeSession(string sessionId, string workDir, string? model, string mode, ILogger logger)
+    public ClaudeSession(string sessionId, string workDir, string? model, string mode, ILogger logger, bool useContinue = false)
     {
         _sessionId = sessionId;
         _workDir = workDir;
         _model = model;
         _mode = mode;
         _logger = logger;
+        _useContinue = useContinue;
     }
 
     public Task StartAsync(CancellationToken ct)
@@ -295,7 +297,9 @@ public sealed class ClaudeSession : IAgentSession
         if (_mode is not ("" or "default"))
             args.AddRange(["--permission-mode", _mode]);
 
-        if (!string.IsNullOrEmpty(_sessionId))
+        if (_useContinue)
+            args.Add("--continue");
+        else if (!string.IsNullOrEmpty(_sessionId))
             args.AddRange(["--resume", _sessionId]);
 
         if (!string.IsNullOrEmpty(_model))

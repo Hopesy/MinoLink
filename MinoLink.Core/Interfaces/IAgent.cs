@@ -16,8 +16,11 @@ public interface IAgent : IAsyncDisposable
     /// <summary>运行时切换权限模式，下次启动会话生效。</summary>
     void SetMode(string mode);
 
-    /// <summary>创建一个新的交互式会话。</summary>
-    Task<IAgentSession> StartSessionAsync(string sessionId, CancellationToken ct);
+    /// <summary>创建或恢复一个交互式会话。sessionId 为空则新建。</summary>
+    Task<IAgentSession> StartSessionAsync(string sessionId, string workDir, CancellationToken ct);
+
+    /// <summary>继续当前工作目录最近一次会话（等价于 --continue）。</summary>
+    Task<IAgentSession> ContinueSessionAsync(string workDir, CancellationToken ct);
 }
 
 /// <summary>

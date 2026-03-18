@@ -83,6 +83,23 @@ public sealed class SessionManager
         }
     }
 
+    /// <summary>删除当前活跃会话，自动切到上一个或下一个。返回被删除的会话。</summary>
+    public SessionRecord? RemoveActive(string sessionKey)
+    {
+        if (!_users.TryGetValue(sessionKey, out var user)) return null;
+        lock (user)
+        {
+            if (user.Sessions.Count == 0) return null;
+            var removed = user.Sessions[user.ActiveIndex];
+            user.Sessions.RemoveAt(user.ActiveIndex);
+            if (user.Sessions.Count == 0)
+                user.ActiveIndex = 0;
+            else if (user.ActiveIndex >= user.Sessions.Count)
+                user.ActiveIndex = user.Sessions.Count - 1;
+            return removed;
+        }
+    }
+
     private sealed class UserSessions
     {
         public List<SessionRecord> Sessions { get; } = [];

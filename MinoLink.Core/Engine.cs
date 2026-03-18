@@ -18,16 +18,21 @@ public sealed class Engine : IAsyncDisposable
     private readonly ILogger<Engine> _logger;
     private readonly CancellationTokenSource _cts = new();
 
+    // 默认工作目录
+    private readonly string _defaultWorkDir;
+
     // sessionKey → 交互状态
     private readonly ConcurrentDictionary<string, InteractiveState> _states = new();
     // sessionKey → 锁（保证同一会话串行处理）
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
 
-    public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms, ILogger<Engine> logger)
+    public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
+        string defaultWorkDir, ILogger<Engine> logger)
     {
         _projectName = projectName;
         _agent = agent;
         _platforms = platforms.ToList();
+        _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
         _logger = logger;
     }
 
@@ -58,6 +63,7 @@ public sealed class Engine : IAsyncDisposable
             return;
 
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
+        session.ProjectKey ??= _defaultWorkDir;
         session.LastActiveAt = DateTimeOffset.UtcNow;
 
         // 获取该会话的锁
@@ -322,18 +328,21 @@ public sealed class Engine : IAsyncDisposable
 
         return cmd switch
         {
-            "clear" or "new" => await CmdClearAsync(platform, msg, args),
-            "list" => await CmdListAsync(platform, msg),
+            "new" => await CmdNewAsync(platform, msg, args),
+            "clear" => await CmdClearAsync(platform, msg),
+            "resume" => await CmdResumeAsync(platform, msg),
             "switch" => await CmdSwitchAsync(platform, msg, args),
+            "continue" => await CmdContinueAsync(platform, msg),
             "current" => await CmdCurrentAsync(platform, msg),
             "mode" => await CmdModeAsync(platform, msg, args),
+            "project" => await CmdProjectAsync(platform, msg, args),
             "help" => await CmdHelpAsync(platform, msg),
             _ => false, // 未知命令，透传给 Agent
         };
     }
 
-    /// <summary>/clear [名称] - 创建新会话。</summary>
-    private async Task<bool> CmdClearAsync(IPlatform platform, Message msg, string[] args)
+    /// <summary>/new [名称] [--project 路径] - 创建新会话。</summary>
+    private async Task<bool> CmdNewAsync(IPlatform platform, Message msg, string[] args)
     {
         var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
@@ -346,12 +355,41 @@ public sealed class Engine : IAsyncDisposable
         {
             await DestroyStateAsync(msg.SessionKey);
 
-            var name = args.Length > 0 ? string.Join(' ', args) : null;
+            // 解析 --project 选项
+            string? workDir = null;
+            var nameArgs = new List<string>();
+            for (var i = 0; i < args.Length; i++)
+            {
+                if (args[i] is "--project" or "-p" && i + 1 < args.Length)
+                {
+                    workDir = args[++i];
+                }
+                else
+                {
+                    nameArgs.Add(args[i]);
+                }
+            }
+
+            // 验证目录存在
+            if (workDir is not null)
+            {
+                workDir = Path.GetFullPath(workDir);
+                if (!Directory.Exists(workDir))
+                {
+                    await platform.ReplyAsync(msg.ReplyContext,
+                        $"目录不存在: `{workDir}`", _cts.Token);
+                    return true;
+                }
+            }
+
+            var name = nameArgs.Count > 0 ? string.Join(' ', nameArgs) : null;
             var newSession = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From, name);
+            newSession.ProjectKey = workDir ?? _defaultWorkDir;
 
             var displayName = name ?? $"会话 #{GetSessionIndex(msg.SessionKey)}";
+            var projectDisplay = newSession.ProjectKey != _defaultWorkDir ? $" (目录: {newSession.ProjectKey})" : "";
             await platform.ReplyAsync(msg.ReplyContext,
-                $"✅ 已创建新会话: **{displayName}**\n发送任意消息开始对话。", _cts.Token);
+                $"✅ 已创建新会话: **{displayName}**{projectDisplay}\n发送任意消息开始对话。", _cts.Token);
         }
         finally
         {
@@ -360,8 +398,65 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
-    /// <summary>/list - 列出所有会话。</summary>
-    private async Task<bool> CmdListAsync(IPlatform platform, Message msg)
+    /// <summary>/clear - 清除当前会话（删除并新建空白会话）。</summary>
+    private async Task<bool> CmdClearAsync(IPlatform platform, Message msg)
+    {
+        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
+        {
+            await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法清除会话。", _cts.Token);
+            return true;
+        }
+
+        try
+        {
+            await DestroyStateAsync(msg.SessionKey);
+
+            var removed = _sessions.RemoveActive(msg.SessionKey);
+            // 自动创建一个新的空白会话
+            _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From);
+
+            var removedName = removed?.Name ?? "当前会话";
+            await platform.ReplyAsync(msg.ReplyContext,
+                $"🗑️ 已清除 **{removedName}** 的对话历史。\n发送任意消息开始全新对话。", _cts.Token);
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
+        return true;
+    }
+
+    /// <summary>/continue - 继续当前工作目录最近一次 Claude Code 会话。</summary>
+    private async Task<bool> CmdContinueAsync(IPlatform platform, Message msg)
+    {
+        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
+        {
+            await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理。", _cts.Token);
+            return true;
+        }
+
+        try
+        {
+            await DestroyStateAsync(msg.SessionKey);
+
+            // 创建一条特殊的 SessionRecord，标记为 continue 模式
+            var session = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From, "continued");
+            session.AgentSessionId = "__continue__"; // 特殊标记
+
+            await platform.ReplyAsync(msg.ReplyContext,
+                "🔄 将继续最近一次 Claude Code 会话。\n发送任意消息继续对话。", _cts.Token);
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
+        return true;
+    }
+
+    /// <summary>/resume - 列出所有会话（对应 Claude Code 的 resume 概念）。</summary>
+    private async Task<bool> CmdResumeAsync(IPlatform platform, Message msg)
     {
         var (sessions, activeIndex) = _sessions.GetAllSessions(msg.SessionKey);
         if (sessions.Count == 0)
@@ -383,7 +478,7 @@ public sealed class Engine : IAsyncDisposable
             sb.AppendLine($"{marker} **{i + 1}.** {name}  (创建: {created}, 活跃: {lastActive})");
         }
         sb.AppendLine();
-        sb.AppendLine("使用 `/switch <序号>` 切换会话");
+        sb.AppendLine("使用 `/switch <序号>` 恢复指定会话");
 
         await platform.ReplyAsync(msg.ReplyContext, sb.ToString(), _cts.Token);
         return true;
@@ -394,7 +489,7 @@ public sealed class Engine : IAsyncDisposable
     {
         if (args.Length == 0 || !int.TryParse(args[0], out var index))
         {
-            await platform.ReplyAsync(msg.ReplyContext, "用法: `/switch <序号>`\n使用 `/list` 查看可用会话。", _cts.Token);
+            await platform.ReplyAsync(msg.ReplyContext, "用法: `/switch <序号>`\n使用 `/resume` 查看可用会话。", _cts.Token);
             return true;
         }
 
@@ -410,7 +505,7 @@ public sealed class Engine : IAsyncDisposable
             var target = _sessions.SwitchTo(msg.SessionKey, index);
             if (target is null)
             {
-                await platform.ReplyAsync(msg.ReplyContext, $"序号 {index} 不存在，使用 `/list` 查看可用会话。", _cts.Token);
+                await platform.ReplyAsync(msg.ReplyContext, $"序号 {index} 不存在，使用 `/resume` 查看可用会话。", _cts.Token);
                 return true;
             }
 
@@ -445,9 +540,11 @@ public sealed class Engine : IAsyncDisposable
         var mode = _agent.Mode;
         ModeDisplayNames.TryGetValue(mode, out var modeDisplay);
         modeDisplay ??= mode;
+        var projectKey = session.ProjectKey ?? _defaultWorkDir;
 
         var text = $"**当前会话**: {name}\n" +
                    $"**会话ID**: `{sid}`\n" +
+                   $"**工作目录**: `{projectKey}`\n" +
                    $"**权限模式**: {modeDisplay}\n" +
                    $"**创建时间**: {created}\n" +
                    $"**最后活跃**: {lastActive}";
@@ -521,16 +618,68 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
+    /// <summary>/project [路径] - 查看或切换工作目录。</summary>
+    private async Task<bool> CmdProjectAsync(IPlatform platform, Message msg, string[] args)
+    {
+        // 无参数：显示当前工作目录
+        if (args.Length == 0)
+        {
+            var session = _sessions.GetActive(msg.SessionKey);
+            var currentDir = session?.ProjectKey ?? _defaultWorkDir;
+
+            await platform.ReplyAsync(msg.ReplyContext,
+                $"**当前工作目录**: `{currentDir}`\n默认: `{_defaultWorkDir}`\n\n使用 `/project <路径>` 切换", _cts.Token);
+            return true;
+        }
+
+        // 有参数：切换到指定路径
+        var targetDir = Path.GetFullPath(string.Join(' ', args));
+        if (!Directory.Exists(targetDir))
+        {
+            await platform.ReplyAsync(msg.ReplyContext,
+                $"目录不存在: `{targetDir}`", _cts.Token);
+            return true;
+        }
+
+        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
+        {
+            await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法切换目录。", _cts.Token);
+            return true;
+        }
+
+        try
+        {
+            // 销毁当前进程（下次消息时在新目录启动）
+            await DestroyStateAsync(msg.SessionKey);
+
+            var activeSession = _sessions.GetActive(msg.SessionKey);
+            if (activeSession is not null)
+                activeSession.ProjectKey = targetDir;
+
+            await platform.ReplyAsync(msg.ReplyContext,
+                $"✅ 已切换工作目录: `{targetDir}`\n下次发消息时将在新目录启动。", _cts.Token);
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
+        return true;
+    }
+
     /// <summary>/help - 显示可用命令。</summary>
     private async Task<bool> CmdHelpAsync(IPlatform platform, Message msg)
     {
         var text = """
                    **MinoLink 命令**
 
-                   `/clear [名称]` - 创建新会话
-                   `/list` - 列出所有会话
+                   `/new [名称] [--project 路径]` - 创建新会话
+                   `/clear` - 清除当前会话的对话历史
+                   `/continue` - 继续最近一次 Claude Code 会话
+                   `/resume` - 列出所有会话
                    `/switch <序号>` - 切换到指定会话
                    `/current` - 查看当前会话信息
+                   `/project [路径]` - 查看/切换工作目录
                    `/mode [模式]` - 查看/切换权限模式
                    `/help` - 显示此帮助
 
@@ -566,8 +715,21 @@ public sealed class Engine : IAsyncDisposable
             return existing;
         }
 
-        var agentSession = await _agent.StartSessionAsync(session.AgentSessionId ?? "", _cts.Token);
-        session.AgentSessionId = agentSession.SessionId;
+        // 工作目录直接取自 session.ProjectKey
+        var workDir = session.ProjectKey ?? _defaultWorkDir;
+
+        IAgentSession agentSession;
+        if (session.AgentSessionId == "__continue__")
+        {
+            // /continue 模式：使用 --continue 恢复最近会话
+            agentSession = await _agent.ContinueSessionAsync(workDir, _cts.Token);
+            session.AgentSessionId = agentSession.SessionId; // 拿到真实 session_id
+        }
+        else
+        {
+            agentSession = await _agent.StartSessionAsync(session.AgentSessionId ?? "", workDir, _cts.Token);
+            session.AgentSessionId = agentSession.SessionId;
+        }
 
         var state = new InteractiveState(agentSession);
         _states[sessionKey] = state;

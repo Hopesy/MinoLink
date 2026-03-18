@@ -13,4 +13,5 @@ public sealed class SessionRecord
     public string? Platform { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastActiveAt { get; set; } = DateTimeOffset.UtcNow;
+    public string? ProjectKey { get; set; }
 }

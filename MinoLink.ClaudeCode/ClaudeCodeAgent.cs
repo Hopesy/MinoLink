@@ -11,7 +11,6 @@ namespace MinoLink.ClaudeCode;
 /// </summary>
 public sealed class ClaudeCodeAgent : IAgent
 {
-    private readonly string _workDir;
     private readonly string? _model;
     private string _mode;
     private readonly ILogger<ClaudeCodeAgent> _logger;
@@ -21,7 +20,6 @@ public sealed class ClaudeCodeAgent : IAgent
 
     public ClaudeCodeAgent(AgentOptions options, ILogger<ClaudeCodeAgent> logger)
     {
-        _workDir = Path.GetFullPath(options.WorkDir);
         _model = options.Model;
         _mode = NormalizeMode(options.Mode);
         _logger = logger;
@@ -30,9 +28,16 @@ public sealed class ClaudeCodeAgent : IAgent
         ValidateCliAvailable();
     }
 
-    public async Task<IAgentSession> StartSessionAsync(string sessionId, CancellationToken ct)
+    public async Task<IAgentSession> StartSessionAsync(string sessionId, string workDir, CancellationToken ct)
     {
-        var session = new ClaudeSession(sessionId, _workDir, _model, _mode, _logger);
+        var session = new ClaudeSession(sessionId, workDir, _model, _mode, _logger);
+        await session.StartAsync(ct);
+        return session;
+    }
+
+    public async Task<IAgentSession> ContinueSessionAsync(string workDir, CancellationToken ct)
+    {
+        var session = new ClaudeSession("", workDir, _model, _mode, _logger, useContinue: true);
         await session.StartAsync(ct);
         return session;
     }
@@ -57,7 +62,7 @@ public sealed class ClaudeCodeAgent : IAgent
                 CreateNoWindow = true,
             });
             proc?.WaitForExit(5000);
-            _logger.LogInformation("Claude CLI 可用: {WorkDir}, mode={Mode}", _workDir, _mode);
+            _logger.LogInformation("Claude CLI 可用, mode={Mode}", _mode);
         }
         catch
         {
