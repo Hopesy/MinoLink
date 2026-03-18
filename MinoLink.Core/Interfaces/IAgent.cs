@@ -10,6 +10,12 @@ public interface IAgent : IAsyncDisposable
 {
     string Name { get; }
 
+    /// <summary>当前权限模式。</summary>
+    string Mode { get; }
+
+    /// <summary>运行时切换权限模式，下次启动会话生效。</summary>
+    void SetMode(string mode);
+
     /// <summary>创建一个新的交互式会话。</summary>
     Task<IAgentSession> StartSessionAsync(string sessionId, CancellationToken ct);
 }

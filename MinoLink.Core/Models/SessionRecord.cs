@@ -7,6 +7,7 @@ public sealed class SessionRecord
 {
     public required string SessionKey { get; init; }
     public string? AgentSessionId { get; set; }
+    public string? Name { get; set; }
     public string? From { get; init; }
     public string? FromName { get; init; }
     public string? Platform { get; init; }

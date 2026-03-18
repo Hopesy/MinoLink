@@ -13,10 +13,11 @@ public sealed class ClaudeCodeAgent : IAgent
 {
     private readonly string _workDir;
     private readonly string? _model;
-    private readonly string _mode;
+    private string _mode;
     private readonly ILogger<ClaudeCodeAgent> _logger;
 
     public string Name => "claudecode";
+    public string Mode => _mode;
 
     public ClaudeCodeAgent(AgentOptions options, ILogger<ClaudeCodeAgent> logger)
     {
@@ -34,6 +35,12 @@ public sealed class ClaudeCodeAgent : IAgent
         var session = new ClaudeSession(sessionId, _workDir, _model, _mode, _logger);
         await session.StartAsync(ct);
         return session;
+    }
+
+    public void SetMode(string mode)
+    {
+        _mode = NormalizeMode(mode);
+        _logger.LogInformation("权限模式已切换: {Mode}", _mode);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
