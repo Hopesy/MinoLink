@@ -27,6 +27,16 @@ builder.Services.AddSingleton<IAgent>(sp =>
     }, logger);
 });
 
+// 注册 Engine
+builder.Services.AddSingleton<Engine>(sp =>
+{
+    var agent = sp.GetRequiredService<IAgent>();
+    var platforms = sp.GetServices<IPlatform>();
+    var logger = sp.GetRequiredService<ILogger<Engine>>();
+    var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
+    return new Engine(config.ProjectName ?? "default", agent, platforms, config.Agent.WorkDir, sessionStoragePath, logger);
+});
+
 // 注册飞书平台
 if (config.Feishu is { AppId: not null and not "" })
 {
@@ -42,14 +52,6 @@ if (config.Feishu is { AppId: not null and not "" })
     builder.Services.AddSingleton<IPlatform>(sp => sp.GetRequiredService<FeishuPlatform>());
 }
 
-// 注册 Engine
-builder.Services.AddSingleton<Engine>(sp =>
-{
-    var agent = sp.GetRequiredService<IAgent>();
-    var platforms = sp.GetServices<IPlatform>();
-    var logger = sp.GetRequiredService<ILogger<Engine>>();
-    return new Engine(config.ProjectName ?? "default", agent, platforms, config.Agent.WorkDir, logger);
-});
 
 // 注册 HostedService
 builder.Services.AddHostedService<EngineHostedService>();

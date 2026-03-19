@@ -106,7 +106,8 @@ public sealed class ClaudeSession : IAgentSession
         };
 
         var json = JsonSerializer.Serialize(msg);
-        _logger.LogInformation("→ 权限响应: {RequestId} allow={Allow}", requestId, response.Allow);
+        _logger.LogInformation("→ 权限响应: {RequestId} allow={Allow} allowAll={AllowAll}",
+            requestId, response.Allow, response.AllowAll);
         await _stdin.WriteLineAsync(json);
     }
 

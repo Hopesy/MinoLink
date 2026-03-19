@@ -14,7 +14,7 @@ public sealed class Engine : IAsyncDisposable
     private readonly string _projectName;
     private readonly IAgent _agent;
     private readonly List<IPlatform> _platforms;
-    private readonly SessionManager _sessions = new();
+    private readonly SessionManager _sessions;
     private readonly ILogger<Engine> _logger;
     private readonly CancellationTokenSource _cts = new();
 
@@ -27,11 +27,12 @@ public sealed class Engine : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
 
     public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
-        string defaultWorkDir, ILogger<Engine> logger)
+        string defaultWorkDir, string sessionStoragePath, ILogger<Engine> logger)
     {
         _projectName = projectName;
         _agent = agent;
         _platforms = platforms.ToList();
+        _sessions = new SessionManager(sessionStoragePath);
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
         _logger = logger;
     }
@@ -63,7 +64,11 @@ public sealed class Engine : IAsyncDisposable
             return;
 
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
-        session.ProjectKey ??= _defaultWorkDir;
+        if (session.ProjectKey is null)
+        {
+            session.ProjectKey = _defaultWorkDir;
+            _sessions.Save();
+        }
         session.LastActiveAt = DateTimeOffset.UtcNow;
 
         // 获取该会话的锁
@@ -252,6 +257,17 @@ public sealed class Engine : IAsyncDisposable
     private async Task HandlePermissionRequestAsync(
         IPlatform platform, object replyContext, InteractiveState state, AgentEvent evt, CancellationToken ct)
     {
+        if (state.AutoAllowPermissions)
+        {
+            _logger.LogInformation("会话已开启自动批准权限，直接放行: {RequestId} tool={Tool}", evt.RequestId, evt.ToolName);
+            await state.AgentSession.RespondPermissionAsync(evt.RequestId!, new PermissionResponse
+            {
+                Allow = true,
+                AllowAll = true,
+            }, ct);
+            return;
+        }
+
         var pending = new PendingPermission(evt.RequestId!);
         state.PendingPermission = pending;
 
@@ -264,11 +280,13 @@ public sealed class Engine : IAsyncDisposable
         else
         {
             await platform.ReplyAsync(replyContext,
-                $"🔒 权限请求: {evt.ToolName}\n输入 'allow' 允许, 'deny' 拒绝", ct);
+                $"🔒 权限请求: {evt.ToolName}\n输入 'allow' 允许, 'deny' 拒绝, 'allow all' 全部允许", ct);
         }
 
         // 阻塞等待用户响应
         var response = await pending.WaitAsync(ct);
+        if (response.AllowAll)
+            state.AutoAllowPermissions = true;
 
         await state.AgentSession.RespondPermissionAsync(evt.RequestId!, response, ct);
         state.PendingPermission = null;
@@ -291,12 +309,26 @@ public sealed class Engine : IAsyncDisposable
     };
 
     /// <summary>响应权限请求（由平台卡片回调触发）。</summary>
-    public void ResolvePermission(string sessionKey, string requestId, PermissionResponse response)
+    public bool ResolvePermission(string sessionKey, string requestId, PermissionResponse response)
     {
-        if (_states.TryGetValue(sessionKey, out var state) && state.PendingPermission?.RequestId == requestId)
+        if (!_states.TryGetValue(sessionKey, out var state))
         {
-            state.PendingPermission.Resolve(response);
+            _logger.LogWarning("收到权限回调但未找到会话状态: sessionKey={SessionKey}, requestId={RequestId}",
+                sessionKey, requestId);
+            return false;
         }
+
+        if (state.PendingPermission?.RequestId != requestId)
+        {
+            _logger.LogWarning("收到权限回调但未匹配到待处理请求: sessionKey={SessionKey}, requestId={RequestId}, pendingRequestId={PendingRequestId}",
+                sessionKey, requestId, state.PendingPermission?.RequestId);
+            return false;
+        }
+
+        _logger.LogInformation("权限回调已匹配: sessionKey={SessionKey}, requestId={RequestId}, allow={Allow}, allowAll={AllowAll}",
+            sessionKey, requestId, response.Allow, response.AllowAll);
+        state.PendingPermission.Resolve(response);
+        return true;
     }
 
     // ─── 命令系统 ───────────────────────────────────────────────
@@ -385,6 +417,7 @@ public sealed class Engine : IAsyncDisposable
             var name = nameArgs.Count > 0 ? string.Join(' ', nameArgs) : null;
             var newSession = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From, name);
             newSession.ProjectKey = workDir ?? _defaultWorkDir;
+            _sessions.Save();
 
             var displayName = name ?? $"会话 #{GetSessionIndex(msg.SessionKey)}";
             var projectDisplay = newSession.ProjectKey != _defaultWorkDir ? $" (目录: {newSession.ProjectKey})" : "";
@@ -414,7 +447,9 @@ public sealed class Engine : IAsyncDisposable
 
             var removed = _sessions.RemoveActive(msg.SessionKey);
             // 自动创建一个新的空白会话
-            _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From);
+            var newSession = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From);
+            newSession.ProjectKey = _defaultWorkDir;
+            _sessions.Save();
 
             var removedName = removed?.Name ?? "当前会话";
             await platform.ReplyAsync(msg.ReplyContext,
@@ -441,9 +476,13 @@ public sealed class Engine : IAsyncDisposable
         {
             await DestroyStateAsync(msg.SessionKey);
 
+            var previousProjectKey = _sessions.GetActive(msg.SessionKey)?.ProjectKey ?? _defaultWorkDir;
+
             // 创建一条特殊的 SessionRecord，标记为 continue 模式
             var session = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From, "continued");
             session.AgentSessionId = "__continue__"; // 特殊标记
+            session.ProjectKey = previousProjectKey;
+            _sessions.Save();
 
             await platform.ReplyAsync(msg.ReplyContext,
                 "🔄 将继续最近一次 Claude Code 会话。\n发送任意消息继续对话。", _cts.Token);
@@ -509,6 +548,7 @@ public sealed class Engine : IAsyncDisposable
                 return true;
             }
 
+            _sessions.Save();
             await DestroyStateAsync(msg.SessionKey);
 
             var name = target.Name ?? $"会话 #{index}";
@@ -655,7 +695,10 @@ public sealed class Engine : IAsyncDisposable
 
             var activeSession = _sessions.GetActive(msg.SessionKey);
             if (activeSession is not null)
+            {
                 activeSession.ProjectKey = targetDir;
+                _sessions.Save();
+            }
 
             await platform.ReplyAsync(msg.ReplyContext,
                 $"✅ 已切换工作目录: `{targetDir}`\n下次发消息时将在新目录启动。", _cts.Token);
@@ -764,6 +807,7 @@ public sealed class Engine : IAsyncDisposable
     {
         public IAgentSession AgentSession { get; } = agentSession;
         public PendingPermission? PendingPermission { get; set; }
+        public bool AutoAllowPermissions { get; set; }
     }
 
     /// <summary>权限请求的阻塞等待器。</summary>

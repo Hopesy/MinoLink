@@ -1,4 +1,5 @@
 using FeishuNetSdk;
+using FeishuNetSdk.CallbackEvents;
 using FeishuNetSdk.Im.Events;
 using FeishuNetSdk.Services;
 using FeishuNetSdk.WebSocket;
@@ -28,10 +29,13 @@ public static class FeishuServiceExtensions
         services.AddSingleton(options);
         services.AddSingleton<FeishuPlatform>();
         services.AddScoped<FeishuMessageHandler>();
+        services.AddScoped<FeishuCardActionHandler>();
 
         // 将 FeishuMessageHandler 注册为 FeishuNetSdk 的事件处理器
         services.AddScoped<IEventHandler<EventV2Dto<ImMessageReceiveV1EventBodyDto>,
             ImMessageReceiveV1EventBodyDto>, FeishuMessageHandler>();
+        services.AddScoped<ICallbackHandler<CallbackV2Dto<CardActionTriggerEventBodyDto>,
+            CardActionTriggerEventBodyDto, CardActionTriggerResponseDto>, FeishuCardActionHandler>();
 
         return services;
     }

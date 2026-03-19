@@ -54,9 +54,7 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             return;
         }
 
-        var sessionKey = isGroup
-            ? $"feishu:{senderId}:{chatId}"
-            : $"feishu:{senderId}";
+        var sessionKey = GetSessionKey(chatId, senderId, isGroup);
 
         var msg = new Message
         {
@@ -65,11 +63,15 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             FromName = senderName,
             Content = content,
             IsGroup = isGroup,
-            ReplyContext = new FeishuReplyContext(messageId, chatId, senderId),
+            ReplyContext = new FeishuReplyContext(messageId, chatId, senderId, sessionKey),
         };
 
         await _messageHandler(this, msg);
     }
+
+    internal string GetSessionKey(string chatId, string senderId, bool isGroup = false) => isGroup
+        ? $"feishu:{senderId}:{chatId}"
+        : $"feishu:{senderId}";
 
     // ─────────── 消息发送 ───────────
 
@@ -100,7 +102,7 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     public async Task SendCardAsync(object replyContext, Card card, CancellationToken ct)
     {
         var ctx = (FeishuReplyContext)replyContext;
-        var cardJson = FeishuCardBuilder.BuildCardJson(card);
+        var cardJson = FeishuCardBuilder.BuildCardJson(card, ctx.SessionKey);
 
         var dto = new PostImV1MessagesBodyDto
         {
@@ -274,4 +276,4 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 }
 
 /// <summary>飞书回复上下文。</summary>
-internal sealed record FeishuReplyContext(string MessageId, string ChatId, string SenderId);
+internal sealed record FeishuReplyContext(string MessageId, string ChatId, string SenderId, string SessionKey);

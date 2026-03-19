@@ -8,7 +8,7 @@ namespace MinoLink.Feishu;
 /// </summary>
 internal static class FeishuCardBuilder
 {
-    public static string BuildCardJson(Card card)
+    public static string BuildCardJson(Card card, string? sessionKey = null)
     {
         var elements = new List<object>();
 
@@ -34,7 +34,11 @@ internal static class FeishuCardBuilder
                         tag = "button",
                         text = new { tag = "plain_text", content = b.Label },
                         type = MapButtonStyle(b.Style),
-                        value = new { action = b.Value },
+                        value = new Dictionary<string, string?>
+                        {
+                            ["action"] = b.Value,
+                            ["session_key"] = sessionKey,
+                        },
                     });
                     elements.Add(new
                     {
