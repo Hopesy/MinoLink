@@ -22,6 +22,7 @@ public static class FeishuServiceExtensions
         {
             sdkOpts.AppId = options.AppId;
             sdkOpts.AppSecret = options.AppSecret;
+            sdkOpts.VerificationToken = options.VerificationToken;
             sdkOpts.EnableLogging = true;
         }).AddFeishuWebSocket();
 

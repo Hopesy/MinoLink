@@ -25,6 +25,7 @@ public sealed class Engine : IAsyncDisposable
     private readonly ConcurrentDictionary<string, InteractiveState> _states = new();
     // sessionKey → 锁（保证同一会话串行处理）
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
+    private int _disposeState;
 
     public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
         string defaultWorkDir, string sessionStoragePath, ILogger<Engine> logger)
@@ -58,6 +59,9 @@ public sealed class Engine : IAsyncDisposable
     private async Task HandleMessageAsync(IPlatform platform, Message msg)
     {
         _logger.LogInformation("[{Platform}] 收到消息: {SessionKey} from={From}", platform.Name, msg.SessionKey, msg.From);
+
+        if (await TryHandlePendingPermissionTextAsync(platform, msg))
+            return;
 
         // 命令拦截（在锁之前）
         if (msg.Content.StartsWith('/') && await TryHandleCommandAsync(platform, msg))
@@ -299,6 +303,7 @@ public sealed class Engine : IAsyncDisposable
         [
             new CardMarkdown($"**工具**: `{evt.ToolName}`\n**输入**: {Truncate(evt.ToolInput ?? "", 300)}"),
             new CardDivider(),
+            new CardMarkdown("_如果按钮无响应，请直接回复：allow / deny / allow all_"),
             new CardActions(
             [
                 new CardButton("✅ 允许", $"perm:allow:{evt.RequestId}") { Style = "primary" },
@@ -327,8 +332,73 @@ public sealed class Engine : IAsyncDisposable
 
         _logger.LogInformation("权限回调已匹配: sessionKey={SessionKey}, requestId={RequestId}, allow={Allow}, allowAll={AllowAll}",
             sessionKey, requestId, response.Allow, response.AllowAll);
-        state.PendingPermission.Resolve(response);
+        return state.PendingPermission.Resolve(response);
+    }
+
+    private async Task<bool> TryHandlePendingPermissionTextAsync(IPlatform platform, Message msg)
+    {
+        if (!_states.TryGetValue(msg.SessionKey, out var state) || state.PendingPermission is null)
+            return false;
+
+        if (!TryParsePermissionText(msg.Content, out var response, out var resultText))
+            return false;
+
+        if (!state.PendingPermission.Resolve(response))
+        {
+            _logger.LogWarning("文本权限响应重复或过期: sessionKey={SessionKey}, content={Content}",
+                msg.SessionKey, msg.Content);
+            return true;
+        }
+
+        _logger.LogInformation("收到文本权限响应: sessionKey={SessionKey}, allow={Allow}, allowAll={AllowAll}",
+            msg.SessionKey, response.Allow, response.AllowAll);
+
+        await platform.ReplyAsync(msg.ReplyContext, resultText, _cts.Token);
         return true;
+    }
+
+    private static bool TryParsePermissionText(string? text, out PermissionResponse response, out string resultText)
+    {
+        response = new PermissionResponse { Allow = false };
+        resultText = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = string.Join(' ',
+            text.Trim().ToLowerInvariant()
+                .Replace('_', ' ')
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+        switch (normalized)
+        {
+            case "allow":
+            case "yes":
+            case "y":
+            case "允许":
+                response = new PermissionResponse { Allow = true };
+                resultText = "✅ 已允许";
+                return true;
+
+            case "deny":
+            case "no":
+            case "n":
+            case "拒绝":
+                response = new PermissionResponse { Allow = false };
+                resultText = "❌ 已拒绝";
+                return true;
+
+            case "allow all":
+            case "allowall":
+            case "全部允许":
+            case "允许所有":
+                response = new PermissionResponse { Allow = true, AllowAll = true };
+                resultText = "✅ 已全部允许";
+                return true;
+
+            default:
+                return false;
+        }
     }
 
     // ─── 命令系统 ───────────────────────────────────────────────
@@ -792,16 +862,31 @@ public sealed class Engine : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _cts.CancelAsync();
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            return;
 
-        foreach (var state in _states.Values)
-            await state.AgentSession.DisposeAsync();
+        try
+        {
+            try
+            {
+                await _cts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
 
-        foreach (var platform in _platforms)
-            await platform.DisposeAsync();
+            foreach (var state in _states.Values)
+                await state.AgentSession.DisposeAsync();
 
-        await _agent.DisposeAsync();
-        _cts.Dispose();
+            foreach (var platform in _platforms)
+                await platform.DisposeAsync();
+
+            await _agent.DisposeAsync();
+        }
+        finally
+        {
+            _cts.Dispose();
+        }
     }
 
     /// <summary>单个会话的交互状态。</summary>
@@ -818,7 +903,7 @@ public sealed class Engine : IAsyncDisposable
         private readonly TaskCompletionSource<PermissionResponse> _tcs = new();
         public string RequestId { get; } = requestId;
 
-        public void Resolve(PermissionResponse response) => _tcs.TrySetResult(response);
+        public bool Resolve(PermissionResponse response) => _tcs.TrySetResult(response);
 
         public async Task<PermissionResponse> WaitAsync(CancellationToken ct)
         {

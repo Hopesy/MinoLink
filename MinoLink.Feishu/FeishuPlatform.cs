@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FeishuNetSdk;
+using FeishuNetSdk.Extensions;
 using FeishuNetSdk.Im;
 using Microsoft.Extensions.Logging;
 using MinoLink.Core;
@@ -102,17 +103,16 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     public async Task SendCardAsync(object replyContext, Card card, CancellationToken ct)
     {
         var ctx = (FeishuReplyContext)replyContext;
-        var cardJson = FeishuCardBuilder.BuildCardJson(card, ctx.SessionKey);
+        var cardDto = FeishuCardBuilder.BuildCard(card, ctx.SessionKey);
 
         var dto = new PostImV1MessagesBodyDto
         {
             ReceiveId = ctx.ChatId,
-            MsgType = "interactive",
-            Content = cardJson,
-        };
+        }.SetContent(cardDto);
 
         try
         {
+            _logger.LogInformation("发送飞书交互卡片: chatId={ChatId}, content={Content}", ctx.ChatId, dto.Content);
             await _api.PostImV1MessagesAsync("chat_id", dto);
         }
         catch (Exception ex)

@@ -1,14 +1,14 @@
-using System.Text.Json;
+using FeishuNetSdk.Im.Dtos;
 using MinoLink.Core.Interfaces;
 
 namespace MinoLink.Feishu;
 
 /// <summary>
-/// 将 <see cref="Card"/> 转换为飞书交互式卡片 JSON。
+/// 将 <see cref="Card"/> 转换为飞书交互式卡片 DTO。
 /// </summary>
 internal static class FeishuCardBuilder
 {
-    public static string BuildCardJson(Card card, string? sessionKey = null)
+    public static ElementsCardDto BuildCard(Card card, string? sessionKey = null)
     {
         var elements = new List<object>();
 
@@ -49,19 +49,20 @@ internal static class FeishuCardBuilder
             }
         }
 
-        var cardObj = new
+        return new ElementsCardDto
         {
-            config = new { wide_screen_mode = true },
-            header = card.Title is not null
-                ? new { title = new { tag = "plain_text", content = card.Title } }
+            Config = new ElementsCardDto.ConfigSuffix
+            {
+                EnableForward = true,
+            },
+            Header = card.Title is not null
+                ? new ElementsCardDto.HeaderSuffix
+                {
+                    Title = new HeaderTitleElement(card.Title, null),
+                }
                 : null,
-            elements,
+            Elements = elements.ToArray(),
         };
-
-        return JsonSerializer.Serialize(cardObj, new JsonSerializerOptions
-        {
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        });
     }
 
     private static string MapButtonStyle(string style) => style switch

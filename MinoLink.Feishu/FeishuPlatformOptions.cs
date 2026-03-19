@@ -7,6 +7,7 @@ public sealed class FeishuPlatformOptions
 {
     public string AppId { get; init; } = "";
     public string AppSecret { get; init; } = "";
+    public string VerificationToken { get; init; } = "";
 
     /// <summary>允许的用户 open_id，逗号分隔；"*" 表示所有。</summary>
     public string AllowFrom { get; init; } = "*";

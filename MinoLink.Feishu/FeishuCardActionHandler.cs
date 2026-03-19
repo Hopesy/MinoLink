@@ -58,24 +58,7 @@ public sealed class FeishuCardActionHandler(
         if (!resolved)
             return Task.FromResult(BuildToast(CardActionTriggerResponseDto.ToastSuffix.ToastType.Error, "未找到待处理的权限请求，请重新发起"));
 
-        var result = new CardActionTriggerResponseDto
-        {
-            Toast = new CardActionTriggerResponseDto.ToastSuffix
-            {
-                Type = CardActionTriggerResponseDto.ToastSuffix.ToastType.Success,
-                Content = "权限请求已处理",
-            },
-        };
-
-        result.SetCard(new ElementsCardDto
-        {
-            Elements =
-            [
-                new DivElement(new MarkdownElement(Content: "权限请求已处理")),
-            ],
-        });
-
-        return Task.FromResult(result);
+        return Task.FromResult(BuildResolvedCard(behavior));
     }
 
     private string? ResolveSessionKey(CardActionTriggerEventBodyDto evt)
@@ -112,4 +95,35 @@ public sealed class FeishuCardActionHandler(
             Content = content,
         },
     };
+
+    private static CardActionTriggerResponseDto BuildResolvedCard(string behavior)
+    {
+        var (title, template) = behavior switch
+        {
+            "allow" => ("已允许", "green"),
+            "deny" => ("已拒绝", "red"),
+            "allow_all" => ("已全部允许", "blue"),
+            _ => ("权限请求已处理", "blue"),
+        };
+
+        return new CardActionTriggerResponseDto
+        {
+            Toast = new CardActionTriggerResponseDto.ToastSuffix
+            {
+                Type = CardActionTriggerResponseDto.ToastSuffix.ToastType.Success,
+                Content = "权限请求已处理",
+            },
+        }.SetCard(new ElementsCardV2Dto
+        {
+            Header = new ElementsCardV2Dto.HeaderSuffix
+            {
+                Title = new HeaderTitleElement(title, null),
+                Template = template,
+            },
+            Body = new ElementsCardV2Dto.BodySuffix(
+            [
+                new DivElement().SetText(new PlainTextElement("权限请求已处理", null, null, null, null)),
+            ]),
+        });
+    }
 }

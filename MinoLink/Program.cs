@@ -44,6 +44,7 @@ if (config.Feishu is { AppId: not null and not "" })
     {
         AppId = config.Feishu.AppId,
         AppSecret = config.Feishu.AppSecret ?? "",
+        VerificationToken = config.Feishu.VerificationToken ?? "",
         AllowFrom = config.Feishu.AllowFrom ?? "*",
     };
     builder.Services.AddFeishuPlatform(feishuOpts);
@@ -99,5 +100,6 @@ sealed class FeishuConfig
 {
     public string? AppId { get; init; }
     public string? AppSecret { get; init; }
+    public string? VerificationToken { get; init; }
     public string? AllowFrom { get; init; }
 }
