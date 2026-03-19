@@ -443,12 +443,14 @@ public sealed class Engine : IAsyncDisposable
 
         try
         {
+            var currentProjectKey = _sessions.GetActive(msg.SessionKey)?.ProjectKey ?? _defaultWorkDir;
+
             await DestroyStateAsync(msg.SessionKey);
 
             var removed = _sessions.RemoveActive(msg.SessionKey);
             // 自动创建一个新的空白会话
             var newSession = _sessions.CreateNew(msg.SessionKey, platform.Name, msg.From);
-            newSession.ProjectKey = _defaultWorkDir;
+            newSession.ProjectKey = currentProjectKey;
             _sessions.Save();
 
             var removedName = removed?.Name ?? "当前会话";
