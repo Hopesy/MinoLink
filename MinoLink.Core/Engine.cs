@@ -135,6 +135,10 @@ public sealed class Engine : IAsyncDisposable
             await ProcessEventsAsync(platform, msg.ReplyContext, state, _cts.Token);
             _logger.LogInformation("[{Platform}] 事件流处理完毕", platform.Name);
         }
+        catch (Exception ex) when (state.StopRequested)
+        {
+            _logger.LogInformation(ex, "[{Platform}] 当前回复已被用户中断: {SessionKey}", platform.Name, msg.SessionKey);
+        }
         finally
         {
             typing?.Dispose();
@@ -246,6 +250,9 @@ public sealed class Engine : IAsyncDisposable
         }
 
         // Channel 关闭但没收到 Result 事件 → Agent 进程可能异常退出
+        if (state.StopRequested)
+            return;
+
         _logger.LogWarning("Agent 事件流已结束（未收到 Result 事件）");
         var pendingText = textBuffer.ToString();
         if (previewHandle is not null && updater is not null && !string.IsNullOrWhiteSpace(pendingText))
@@ -464,6 +471,7 @@ public sealed class Engine : IAsyncDisposable
         return cmd switch
         {
             "new" => await CmdNewAsync(platform, msg, args),
+            "stop" => await CmdStopAsync(platform, msg),
             "clear" => await CmdClearAsync(platform, msg),
             "resume" => await CmdResumeAsync(platform, msg),
             "switch" => await CmdSwitchAsync(platform, msg, args),
@@ -531,6 +539,23 @@ public sealed class Engine : IAsyncDisposable
         {
             sessionLock.Release();
         }
+        return true;
+    }
+
+    /// <summary>/stop - 中断当前正在运行的回复，但保留会话记录。</summary>
+    private async Task<bool> CmdStopAsync(IPlatform platform, Message msg)
+    {
+        if (!_states.TryRemove(msg.SessionKey, out var state))
+        {
+            await platform.ReplyAsync(msg.ReplyContext, "当前没有正在运行的回复。", _cts.Token);
+            return true;
+        }
+
+        state.StopRequested = true;
+        _logger.LogInformation("用户请求中断当前回复: sessionKey={SessionKey}", msg.SessionKey);
+
+        await state.AgentSession.DisposeAsync();
+        await platform.ReplyAsync(msg.ReplyContext, "⏹️ 已停止当前回复。直接发送新消息即可继续。", _cts.Token);
         return true;
     }
 
@@ -822,6 +847,7 @@ public sealed class Engine : IAsyncDisposable
                    **MinoLink 命令**
 
                    `/new [名称] [--project 路径]` - 创建新会话
+                   `/stop` - 中断当前正在运行的回复
                    `/clear` - 清除当前会话的对话历史
                    `/continue` - 继续最近一次 Claude Code 会话
                    `/resume` - 列出所有会话
@@ -945,6 +971,7 @@ public sealed class Engine : IAsyncDisposable
         public IAgentSession AgentSession { get; } = agentSession;
         public PendingPermission? PendingPermission { get; set; }
         public bool AutoAllowPermissions { get; set; }
+        public bool StopRequested { get; set; }
     }
 
     /// <summary>权限请求的阻塞等待器。</summary>
