@@ -203,6 +203,7 @@ public sealed class SessionManager
     private static SessionRecord CloneForPersistence(SessionRecord record) => new()
     {
         SessionKey = record.SessionKey,
+        AgentSessionId = record.AgentSessionId,
         Name = record.Name,
         From = record.From,
         FromName = record.FromName,
@@ -215,6 +216,7 @@ public sealed class SessionManager
     private static SessionRecord CloneForRuntime(SessionRecord record) => new()
     {
         SessionKey = record.SessionKey,
+        AgentSessionId = record.AgentSessionId,
         Name = record.Name,
         From = record.From,
         FromName = record.FromName,

@@ -115,8 +115,12 @@ public sealed class Engine : IAsyncDisposable
             await platform.ReplyAsync(msg.ReplyContext, workDirNotice, _cts.Token);
 
         _logger.LogInformation("[{Platform}] 创建/获取 Agent 会话: {SessionKey}", platform.Name, msg.SessionKey);
-        var state = await GetOrCreateStateAsync(msg.SessionKey, session);
+        var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session);
+        var state = stateStart.State;
         _logger.LogInformation("[{Platform}] Agent 会话就绪: {SessionId}", platform.Name, state.AgentSession.SessionId);
+
+        if (!string.IsNullOrWhiteSpace(stateStart.ConnectionNotice))
+            await platform.ReplyAsync(msg.ReplyContext, stateStart.ConnectionNotice, _cts.Token);
 
         // 启动 typing 指示器
         IDisposable? typing = null;
@@ -517,10 +521,10 @@ public sealed class Engine : IAsyncDisposable
             if (workDir is not null)
             {
                 workDir = ResolveProjectPath(workDir);
-                if (!Directory.Exists(workDir))
+                if (!TryEnsureProjectDirectory(workDir, out var _, out var error))
                 {
                     await platform.ReplyAsync(msg.ReplyContext,
-                        $"目录不存在: `{workDir}`", _cts.Token);
+                        $"无法创建目录: `{workDir}`\n{error}", _cts.Token);
                     return true;
                 }
             }
@@ -706,7 +710,7 @@ public sealed class Engine : IAsyncDisposable
         var name = session.Name ?? $"会话 #{activeIndex + 1}";
         var created = session.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
         var lastActive = session.LastActiveAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-        var sid = session.AgentSessionId ?? "(未启动)";
+        var sid = GetDisplaySessionId(msg.SessionKey, session);
         var mode = _agent.Mode;
         ModeDisplayNames.TryGetValue(mode, out var modeDisplay);
         modeDisplay ??= mode;
@@ -804,10 +808,10 @@ public sealed class Engine : IAsyncDisposable
 
         // 有参数：切换到指定路径
         var targetDir = ResolveProjectPath(string.Join(' ', args));
-        if (!Directory.Exists(targetDir))
+        if (!TryEnsureProjectDirectory(targetDir, out var createdDirectory, out var error))
         {
             await platform.ReplyAsync(msg.ReplyContext,
-                $"目录不存在: `{targetDir}`", _cts.Token);
+                $"无法创建目录: `{targetDir}`\n{error}", _cts.Token);
             return true;
         }
 
@@ -823,15 +827,13 @@ public sealed class Engine : IAsyncDisposable
             // 销毁当前进程（下次消息时在新目录启动）
             await DestroyStateAsync(msg.SessionKey);
 
-            var activeSession = _sessions.GetActive(msg.SessionKey);
-            if (activeSession is not null)
-            {
-                activeSession.ProjectKey = targetDir;
-                _sessions.Save();
-            }
+            var activeSession = _sessions.GetActive(msg.SessionKey)
+                ?? _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
+            activeSession.ProjectKey = targetDir;
+            _sessions.Save();
 
             await platform.ReplyAsync(msg.ReplyContext,
-                $"✅ 已切换工作目录: `{targetDir}`\n下次发消息时将在新目录启动。", _cts.Token);
+                $"✅ 已切换工作目录: `{targetDir}`{(createdDirectory ? "\n📁 已自动创建目录。" : "")}\n下次发消息时将在新目录启动。", _cts.Token);
         }
         finally
         {
@@ -882,15 +884,16 @@ public sealed class Engine : IAsyncDisposable
 
     // ─── 会话状态管理 ────────────────────────────────────────────
 
-    private async Task<InteractiveState> GetOrCreateStateAsync(string sessionKey, SessionRecord session)
+    private async Task<StateStartResult> GetOrCreateStateAsync(string sessionKey, SessionRecord session)
     {
         if (_states.TryGetValue(sessionKey, out var existing) && existing.AgentSession is not null)
         {
-            return existing;
+            return new StateStartResult(existing, null);
         }
 
         // 工作目录直接取自 session.ProjectKey
         var workDir = session.ProjectKey ?? _defaultWorkDir;
+        var connectionNotice = GetConnectionNotice(session.AgentSessionId);
 
         IAgentSession agentSession;
         if (session.AgentSessionId == "__continue__")
@@ -907,7 +910,8 @@ public sealed class Engine : IAsyncDisposable
 
         var state = new InteractiveState(agentSession);
         _states[sessionKey] = state;
-        return state;
+        _sessions.Save();
+        return new StateStartResult(state, connectionNotice);
     }
 
     private static string Truncate(string text, int maxLength) =>
@@ -916,6 +920,42 @@ public sealed class Engine : IAsyncDisposable
     private string ResolveProjectPath(string rawPath) => Path.IsPathRooted(rawPath)
         ? Path.GetFullPath(rawPath)
         : Path.GetFullPath(Path.Combine(_defaultWorkDir, rawPath));
+
+    private static string GetConnectionNotice(string? sessionId) =>
+        string.IsNullOrWhiteSpace(sessionId)
+            ? "🎉 客户端已连接"
+            : "🎉 客户端已恢复";
+
+    private string GetDisplaySessionId(string sessionKey, SessionRecord session)
+    {
+        if (_states.TryGetValue(sessionKey, out var state))
+            return state.AgentSession.SessionId;
+
+        return session.AgentSessionId switch
+        {
+            "__continue__" => "(待恢复最近会话)",
+            { Length: > 0 } sid => sid,
+            _ => "(未启动)",
+        };
+    }
+
+    private static bool TryEnsureProjectDirectory(string targetDir, out bool createdDirectory, out string? error)
+    {
+        createdDirectory = !Directory.Exists(targetDir);
+        error = null;
+
+        try
+        {
+            Directory.CreateDirectory(targetDir);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            createdDirectory = false;
+            error = ex.Message;
+            return false;
+        }
+    }
 
     private static string BuildCompletedStatusMessage(string content, bool success)
     {
@@ -973,6 +1013,8 @@ public sealed class Engine : IAsyncDisposable
         public bool AutoAllowPermissions { get; set; }
         public bool StopRequested { get; set; }
     }
+
+    private sealed record StateStartResult(InteractiveState State, string? ConnectionNotice);
 
     /// <summary>权限请求的阻塞等待器。</summary>
     private sealed class PendingPermission(string requestId)
