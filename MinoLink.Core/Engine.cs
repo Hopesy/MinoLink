@@ -60,6 +60,9 @@ public sealed class Engine : IAsyncDisposable
     {
         _logger.LogInformation("[{Platform}] 收到消息: {SessionKey} from={From}", platform.Name, msg.SessionKey, msg.From);
 
+        if (!msg.Content.StartsWith('/') && await TryHandlePendingUserQuestionTextAsync(platform, msg))
+            return;
+
         if (await TryHandlePendingPermissionTextAsync(platform, msg))
             return;
 
@@ -154,11 +157,12 @@ public sealed class Engine : IAsyncDisposable
     {
         var events = state.AgentSession.Events;
         var textBuffer = new System.Text.StringBuilder();
+        var allowThinkingMessages = ShouldEmitThinking(platform);
 
         // 流式预览句柄
         object? previewHandle = null;
         var lastPreviewAt = DateTimeOffset.MinValue;
-        var updater = platform as IMessageUpdater;
+        var updater = ShouldUseStreamingPreview(platform) ? platform as IMessageUpdater : null;
 
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         idleCts.CancelAfter(TimeSpan.FromHours(2));
@@ -179,8 +183,11 @@ public sealed class Engine : IAsyncDisposable
                             await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
                             previewHandle = null;
                         }
-                        var thinkingPreview = Truncate(evt.Content, 300);
-                        await platform.ReplyAsync(replyContext, $"💭 {thinkingPreview}", ct);
+                        if (allowThinkingMessages)
+                        {
+                            var thinkingPreview = Truncate(evt.Content, 300);
+                            await platform.ReplyAsync(replyContext, $"💭 {thinkingPreview}", ct);
+                        }
                         break;
 
                     case AgentEventType.Text:
@@ -215,6 +222,10 @@ public sealed class Engine : IAsyncDisposable
 
                     case AgentEventType.PermissionRequest:
                         await HandlePermissionRequestAsync(platform, replyContext, state, evt, ct);
+                        break;
+
+                    case AgentEventType.UserQuestion:
+                        await HandleUserQuestionAsync(platform, replyContext, state, evt, ct);
                         break;
 
                     case AgentEventType.Result:
@@ -287,12 +298,15 @@ public sealed class Engine : IAsyncDisposable
             {
                 Allow = true,
                 AllowAll = true,
+                UpdatedInput = evt.ToolInputRaw,
             }, ct);
             return;
         }
 
         var pending = new PendingPermission(evt.RequestId!);
         state.PendingPermission = pending;
+        _logger.LogInformation("开始等待用户审批: requestId={RequestId}, tool={Tool}, input={Input}",
+            evt.RequestId, evt.ToolName, evt.ToolInput);
 
         // 构建权限卡片
         if (platform is ICardSender cardSender)
@@ -308,11 +322,64 @@ public sealed class Engine : IAsyncDisposable
 
         // 阻塞等待用户响应
         var response = await pending.WaitAsync(ct);
+        _logger.LogInformation("用户审批已返回: requestId={RequestId}, allow={Allow}, allowAll={AllowAll}",
+            evt.RequestId, response.Allow, response.AllowAll);
         if (response.AllowAll)
             state.AutoAllowPermissions = true;
 
-        await state.AgentSession.RespondPermissionAsync(evt.RequestId!, response, ct);
+        await state.AgentSession.RespondPermissionAsync(evt.RequestId!, new PermissionResponse
+        {
+            Allow = response.Allow,
+            AllowAll = response.AllowAll,
+            UpdatedInput = response.Allow ? (response.UpdatedInput ?? evt.ToolInputRaw) : null,
+            Message = response.Message,
+        }, ct);
         state.PendingPermission = null;
+    }
+
+    private async Task HandleUserQuestionAsync(
+        IPlatform platform, object replyContext, InteractiveState state, AgentEvent evt, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(evt.RequestId))
+            throw new InvalidOperationException("AskUserQuestion 缺少 requestId。");
+        if (evt.ToolInputRaw is null)
+            throw new InvalidOperationException("AskUserQuestion 缺少原始输入。");
+        if (evt.Questions.Count == 0)
+            throw new InvalidOperationException("AskUserQuestion 缺少问题内容。");
+
+        var answers = new Dictionary<int, string>();
+
+        for (var i = 0; i < evt.Questions.Count; i++)
+        {
+            var pending = new PendingUserQuestion(evt.RequestId!, i, evt.Questions[i]);
+            state.PendingUserQuestion = pending;
+
+            _logger.LogInformation("开始等待用户回答问题: requestId={RequestId}, questionIndex={QuestionIndex}, prompt={Prompt}",
+                evt.RequestId, i, evt.Questions[i].Question);
+
+            if (platform is ICardSender cardSender)
+            {
+                var card = BuildUserQuestionCard(evt.RequestId!, evt.Questions[i], i, evt.Questions.Count);
+                await cardSender.SendCardAsync(replyContext, card, ct);
+            }
+            else
+            {
+                await platform.ReplyAsync(replyContext, BuildUserQuestionText(evt.Questions[i], i, evt.Questions.Count), ct);
+            }
+
+            var answer = await pending.WaitAsync(ct);
+            _logger.LogInformation("用户问题已回答: requestId={RequestId}, questionIndex={QuestionIndex}, answer={Answer}",
+                evt.RequestId, i, answer);
+            answers[i] = answer;
+        }
+
+        var updatedInput = BuildAskQuestionUpdatedInput(evt.ToolInputRaw, answers);
+        await state.AgentSession.RespondPermissionAsync(evt.RequestId!, new PermissionResponse
+        {
+            Allow = true,
+            UpdatedInput = updatedInput,
+        }, ct);
+        state.PendingUserQuestion = null;
     }
 
     private static Card BuildPermissionCard(AgentEvent evt) => new()
@@ -331,6 +398,89 @@ public sealed class Engine : IAsyncDisposable
             ]),
         ],
     };
+
+    private static Card BuildUserQuestionCard(string requestId, UserQuestion question, int questionIndex, int totalQuestions)
+    {
+        var header = string.IsNullOrWhiteSpace(question.Header) ? "补充信息" : question.Header;
+        var title = totalQuestions > 1
+            ? $"📝 {header} ({questionIndex + 1}/{totalQuestions})"
+            : $"📝 {header}";
+
+        var elements = new List<CardElement>
+        {
+            new CardMarkdown(question.Question),
+        };
+
+        if (question.Options.Count > 0)
+        {
+            // 展示选项描述（如果有的话）
+            var hasDescriptions = question.Options.Any(o => !string.IsNullOrWhiteSpace(o.Description));
+            if (hasDescriptions)
+            {
+                var optionLines = question.Options
+                    .Select((o, i) => string.IsNullOrWhiteSpace(o.Description)
+                        ? $"**{i + 1}.** {o.Label}"
+                        : $"**{i + 1}.** {o.Label} — {o.Description}")
+                    .ToList();
+                elements.Add(new CardDivider());
+                elements.Add(new CardMarkdown(string.Join("\n", optionLines)));
+            }
+
+            elements.Add(new CardDivider());
+            elements.Add(new CardMarkdown("_点击按钮选择，或直接回复文字自由输入_"));
+
+            var buttons = question.Options
+                .Select((option, index) => new CardButton(option.Label, $"ask:{requestId}:{questionIndex}:{index}")
+                {
+                    Style = index == 0 ? "primary" : "default",
+                })
+                .ToArray();
+            elements.Add(new CardActions(buttons));
+        }
+        else
+        {
+            elements.Add(new CardDivider());
+            elements.Add(new CardMarkdown("_请直接回复文字作答_"));
+        }
+
+        return new Card
+        {
+            Title = title,
+            Elements = elements,
+        };
+    }
+
+    private static string BuildUserQuestionText(UserQuestion question, int questionIndex, int totalQuestions)
+    {
+        var sb = new System.Text.StringBuilder();
+        var header = string.IsNullOrWhiteSpace(question.Header) ? "补充信息" : question.Header;
+        var line1 = totalQuestions > 1
+            ? $"📝 **{header}** ({questionIndex + 1}/{totalQuestions})"
+            : $"📝 **{header}**";
+        sb.AppendLine(line1);
+        sb.AppendLine(question.Question);
+
+        if (question.Options.Count > 0)
+        {
+            sb.AppendLine();
+            foreach (var (option, i) in question.Options.Select((o, i) => (o, i)))
+            {
+                sb.Append($"  {i + 1}. {option.Label}");
+                if (!string.IsNullOrWhiteSpace(option.Description))
+                    sb.Append($" — {option.Description}");
+                sb.AppendLine();
+            }
+            sb.AppendLine();
+            sb.Append("请回复选项序号或文字自由输入");
+        }
+        else
+        {
+            sb.AppendLine();
+            sb.Append("请直接回复文字作答");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     /// <summary>响应权限请求（由平台卡片回调触发）。</summary>
     public bool ResolvePermission(string sessionKey, string requestId, PermissionResponse response)
@@ -352,6 +502,60 @@ public sealed class Engine : IAsyncDisposable
         _logger.LogInformation("权限回调已匹配: sessionKey={SessionKey}, requestId={RequestId}, allow={Allow}, allowAll={AllowAll}",
             sessionKey, requestId, response.Allow, response.AllowAll);
         return state.PendingPermission.Resolve(response);
+    }
+
+    public bool ResolveUserQuestion(string sessionKey, string requestId, string answer)
+    {
+        if (!_states.TryGetValue(sessionKey, out var state))
+        {
+            _logger.LogWarning("收到问题回答但未找到会话状态: sessionKey={SessionKey}, requestId={RequestId}",
+                sessionKey, requestId);
+            return false;
+        }
+
+        if (state.PendingUserQuestion?.RequestId != requestId)
+        {
+            _logger.LogWarning("收到问题回答但未匹配到待处理问题: sessionKey={SessionKey}, requestId={RequestId}, pendingRequestId={PendingRequestId}",
+                sessionKey, requestId, state.PendingUserQuestion?.RequestId);
+            return false;
+        }
+
+        _logger.LogInformation("问题回答已匹配: sessionKey={SessionKey}, requestId={RequestId}, answer={Answer}",
+            sessionKey, requestId, answer);
+        return state.PendingUserQuestion.Resolve(answer);
+    }
+
+    public bool ResolveUserQuestionOption(string sessionKey, string requestId, int questionIndex, int optionIndex)
+    {
+        if (!_states.TryGetValue(sessionKey, out var state))
+        {
+            _logger.LogWarning("收到问题选项回答但未找到会话状态: sessionKey={SessionKey}, requestId={RequestId}",
+                sessionKey, requestId);
+            return false;
+        }
+
+        if (state.PendingUserQuestion?.RequestId != requestId || state.PendingUserQuestion.QuestionIndex != questionIndex)
+        {
+            _logger.LogWarning("收到问题选项回答但未匹配到待处理问题: sessionKey={SessionKey}, requestId={RequestId}, questionIndex={QuestionIndex}, pendingRequestId={PendingRequestId}, pendingQuestionIndex={PendingQuestionIndex}",
+                sessionKey, requestId, questionIndex, state.PendingUserQuestion?.RequestId, state.PendingUserQuestion?.QuestionIndex);
+            return false;
+        }
+
+        _logger.LogInformation("问题选项已匹配: sessionKey={SessionKey}, requestId={RequestId}, questionIndex={QuestionIndex}, optionIndex={OptionIndex}",
+            sessionKey, requestId, questionIndex, optionIndex);
+        return state.PendingUserQuestion.ResolveOptionIndex(optionIndex);
+    }
+
+    private static Dictionary<string, object?> BuildAskQuestionUpdatedInput(
+        Dictionary<string, object?> originalInput,
+        IReadOnlyDictionary<int, string> answers)
+    {
+        var updated = new Dictionary<string, object?>(originalInput);
+        var answerMap = new Dictionary<string, object?>();
+        foreach (var (index, answer) in answers.OrderBy(entry => entry.Key))
+            answerMap[index.ToString()] = answer;
+        updated["answers"] = answerMap;
+        return updated;
     }
 
     private string? EnsureSessionWorkDir(SessionRecord session)
@@ -398,6 +602,25 @@ public sealed class Engine : IAsyncDisposable
             msg.SessionKey, response.Allow, response.AllowAll);
 
         await platform.ReplyAsync(msg.ReplyContext, resultText, _cts.Token);
+        return true;
+    }
+
+    private async Task<bool> TryHandlePendingUserQuestionTextAsync(IPlatform platform, Message msg)
+    {
+        if (!_states.TryGetValue(msg.SessionKey, out var state) || state.PendingUserQuestion is null)
+            return false;
+
+        if (!state.PendingUserQuestion.Resolve(msg.Content.Trim()))
+        {
+            _logger.LogWarning("文本回答重复或过期: sessionKey={SessionKey}, content={Content}",
+                msg.SessionKey, msg.Content);
+            return true;
+        }
+
+        _logger.LogInformation("收到文本问题回答: sessionKey={SessionKey}, requestId={RequestId}, answer={Answer}",
+            msg.SessionKey, state.PendingUserQuestion.RequestId, msg.Content);
+
+        await platform.ReplyAsync(msg.ReplyContext, "✅ 已提交回答", _cts.Token);
         return true;
     }
 
@@ -970,6 +1193,12 @@ public sealed class Engine : IAsyncDisposable
         return $"{content}\n\n---\n{status}";
     }
 
+    private static bool ShouldEmitThinking(IPlatform platform) =>
+        !string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ShouldUseStreamingPreview(IPlatform platform) =>
+        !string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase);
+
     private static IEnumerable<string> SplitMessage(string text, int maxLength)
     {
         for (var i = 0; i < text.Length; i += maxLength)
@@ -1010,6 +1239,7 @@ public sealed class Engine : IAsyncDisposable
     {
         public IAgentSession AgentSession { get; } = agentSession;
         public PendingPermission? PendingPermission { get; set; }
+        public PendingUserQuestion? PendingUserQuestion { get; set; }
         public bool AutoAllowPermissions { get; set; }
         public bool StopRequested { get; set; }
     }
@@ -1025,6 +1255,41 @@ public sealed class Engine : IAsyncDisposable
         public bool Resolve(PermissionResponse response) => _tcs.TrySetResult(response);
 
         public async Task<PermissionResponse> WaitAsync(CancellationToken ct)
+        {
+            using var reg = ct.Register(() => _tcs.TrySetCanceled(ct));
+            return await _tcs.Task;
+        }
+    }
+
+    private sealed class PendingUserQuestion(string requestId, int questionIndex, UserQuestion question)
+    {
+        private readonly TaskCompletionSource<string> _tcs = new();
+        public string RequestId { get; } = requestId;
+        public int QuestionIndex { get; } = questionIndex;
+        public UserQuestion Question { get; } = question;
+
+        public bool Resolve(string answer)
+        {
+            if (Question.Options.Count > 0)
+            {
+                var matched = Question.Options.FirstOrDefault(option =>
+                    string.Equals(option.Label, answer, StringComparison.OrdinalIgnoreCase));
+                if (matched is not null)
+                    answer = matched.Label;
+            }
+
+            return _tcs.TrySetResult(answer);
+        }
+
+        public bool ResolveOptionIndex(int index)
+        {
+            if (index < 0 || index >= Question.Options.Count)
+                return false;
+
+            return _tcs.TrySetResult(Question.Options[index].Label);
+        }
+
+        public async Task<string> WaitAsync(CancellationToken ct)
         {
             using var reg = ct.Register(() => _tcs.TrySetCanceled(ct));
             return await _tcs.Task;

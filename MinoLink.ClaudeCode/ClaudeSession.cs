@@ -59,6 +59,7 @@ public sealed class ClaudeSession : IAgentSession
         // 过滤 CLAUDECODE 环境变量，避免被检测为嵌套会话
         var env = psi.Environment;
         env.Remove("CLAUDECODE");
+        ApplyPreferredShellEnvironment(env);
 
         _process = Process.Start(psi) ?? throw new InvalidOperationException("无法启动 claude 进程");
         _logger.LogInformation("claude 进程已启动: PID={Pid}", _process.Id);
@@ -91,8 +92,8 @@ public sealed class ClaudeSession : IAgentSession
         if (_stdin is null) return;
 
         object permResponse = response.Allow
-            ? new { behavior = "allow", updatedInput = new { } }
-            : new { behavior = "deny", message = "The user denied this tool use. Stop and wait for the user's instructions." };
+            ? new { behavior = "allow", updatedInput = response.UpdatedInput ?? new Dictionary<string, object?>() }
+            : new { behavior = "deny", message = response.Message ?? "The user denied this tool use. Stop and wait for the user's instructions." };
 
         var msg = new
         {
@@ -251,6 +252,22 @@ public sealed class ClaudeSession : IAgentSession
 
         var toolName = request.TryGetProperty("tool_name", out var tn) ? tn.GetString() ?? "" : "";
         var inputSummary = SummarizeToolInput(toolName, request);
+        _logger.LogInformation("收到工具权限请求: requestId={RequestId}, tool={Tool}, input={Input}",
+            requestId, toolName, inputSummary);
+
+        if (toolName == "AskUserQuestion")
+        {
+            await writer.WriteAsync(new AgentEvent
+            {
+                Type = AgentEventType.UserQuestion,
+                RequestId = requestId,
+                ToolName = toolName,
+                ToolInput = inputSummary,
+                ToolInputRaw = DeserializeInput(request),
+                Questions = ParseUserQuestions(request),
+            });
+            return;
+        }
 
         // bypassPermissions 模式自动批准
         if (_mode == "bypassPermissions")
@@ -266,6 +283,7 @@ public sealed class ClaudeSession : IAgentSession
             RequestId = requestId,
             ToolName = toolName,
             ToolInput = inputSummary,
+            ToolInputRaw = DeserializeInput(request),
         });
     }
 
@@ -279,10 +297,132 @@ public sealed class ClaudeSession : IAgentSession
                 input.TryGetProperty("file_path", out var fp) ? fp.GetString() ?? "" : "",
             "Bash" =>
                 input.TryGetProperty("command", out var cmd) ? cmd.GetString() ?? "" : "",
+            "AskUserQuestion" =>
+                ExtractQuestionSummary(input),
             "Grep" or "Glob" =>
                 input.TryGetProperty("pattern", out var pat) ? pat.GetString() ?? "" : "",
             _ => input.GetRawText().Length > 200 ? input.GetRawText()[..200] + "..." : input.GetRawText(),
         };
+    }
+
+    private static Dictionary<string, object?>? DeserializeInput(JsonElement element)
+    {
+        if (!element.TryGetProperty("input", out var input))
+            return null;
+
+        return JsonSerializer.Deserialize<Dictionary<string, object?>>(input.GetRawText());
+    }
+
+    private static IReadOnlyList<UserQuestion> ParseUserQuestions(JsonElement element)
+    {
+        if (!element.TryGetProperty("input", out var input) ||
+            !input.TryGetProperty("questions", out var questions) ||
+            questions.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var result = new List<UserQuestion>();
+        foreach (var question in questions.EnumerateArray())
+        {
+            var text = question.TryGetProperty("question", out var questionText)
+                ? questionText.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(text))
+                continue;
+
+            var options = new List<UserQuestionOption>();
+            if (question.TryGetProperty("options", out var optionElements) && optionElements.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var option in optionElements.EnumerateArray())
+                {
+                    var label = option.TryGetProperty("label", out var labelElement)
+                        ? labelElement.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(label))
+                        continue;
+
+                    var description = option.TryGetProperty("description", out var descriptionElement)
+                        ? descriptionElement.GetString() ?? string.Empty
+                        : string.Empty;
+
+                    options.Add(new UserQuestionOption
+                    {
+                        Label = label,
+                        Description = description,
+                    });
+                }
+            }
+
+            result.Add(new UserQuestion
+            {
+                Question = text!,
+                Header = question.TryGetProperty("header", out var headerElement)
+                    ? headerElement.GetString() ?? string.Empty
+                    : string.Empty,
+                Options = options,
+                MultiSelect = question.TryGetProperty("multiSelect", out var multiSelectElement) &&
+                              multiSelectElement.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                              multiSelectElement.GetBoolean(),
+            });
+        }
+
+        return result;
+    }
+
+    private static string ExtractQuestionSummary(JsonElement input)
+    {
+        if (input.TryGetProperty("question", out var singleQuestion))
+            return singleQuestion.GetString() ?? "请补充信息";
+
+        if (!input.TryGetProperty("questions", out var questions) || questions.ValueKind != JsonValueKind.Array)
+            return input.GetRawText();
+
+        var parts = new List<string>();
+        foreach (var question in questions.EnumerateArray())
+        {
+            var header = question.TryGetProperty("header", out var headerElement)
+                ? headerElement.GetString()
+                : null;
+            var text = question.TryGetProperty("question", out var questionElement)
+                ? questionElement.GetString()
+                : null;
+            var labels = ExtractOptionLabels(question);
+
+            if (!string.IsNullOrWhiteSpace(header))
+                parts.Add($"[{header}]");
+            if (!string.IsNullOrWhiteSpace(text))
+                parts.Add(text!);
+            if (labels.Count > 0)
+                parts.Add("可选项: " + string.Join(" / ", labels));
+        }
+
+        return parts.Count > 0 ? string.Join("\n", parts) : input.GetRawText();
+    }
+
+    private static IReadOnlyList<string> ExtractOptionLabels(JsonElement input)
+    {
+        if (!input.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var labels = new List<string>();
+        foreach (var option in options.EnumerateArray())
+        {
+            if (option.ValueKind == JsonValueKind.String)
+            {
+                var value = option.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    labels.Add(value);
+                continue;
+            }
+
+            if (option.ValueKind == JsonValueKind.Object &&
+                option.TryGetProperty("label", out var labelElement) &&
+                !string.IsNullOrWhiteSpace(labelElement.GetString()))
+            {
+                labels.Add(labelElement.GetString()!);
+            }
+        }
+
+        return labels;
     }
 
     private List<string> BuildArgs()
@@ -307,6 +447,68 @@ public sealed class ClaudeSession : IAgentSession
             args.AddRange(["--model", _model]);
 
         return args;
+    }
+
+    private void ApplyPreferredShellEnvironment(IDictionary<string, string?> env)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var gitBashPath = GetPreferredGitBashPath();
+        if (gitBashPath is null)
+        {
+            _logger.LogWarning("未找到 Git Bash，Claude 的 Bash 工具将继续使用系统默认 bash。");
+            return;
+        }
+
+        var bashDirectory = Path.GetDirectoryName(gitBashPath);
+        if (string.IsNullOrWhiteSpace(bashDirectory))
+            return;
+
+        var pathEntries = (env["PATH"] ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Where(entry => !string.Equals(
+                entry.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                bashDirectory,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        pathEntries.Insert(0, bashDirectory);
+        var gitBinDirectory = Path.GetDirectoryName(bashDirectory);
+        if (!string.IsNullOrWhiteSpace(gitBinDirectory) &&
+            !pathEntries.Any(entry => string.Equals(
+                entry.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                gitBinDirectory,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            pathEntries.Insert(0, gitBinDirectory);
+        }
+
+        env["PATH"] = string.Join(Path.PathSeparator, pathEntries);
+        env["SHELL"] = gitBashPath;
+        env["BASH"] = gitBashPath;
+        env["MSYSTEM"] = "MINGW64";
+        env["CHERE_INVOKING"] = "1";
+
+        _logger.LogInformation("已为 Claude 子进程优先配置 Git Bash: {BashPath}", gitBashPath);
+    }
+
+    private static string? GetPreferredGitBashPath()
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+
+        foreach (var candidate in new[]
+        {
+            @"C:\Program Files\Git\bin\bash.exe",
+            @"C:\Program Files\Git\usr\bin\bash.exe",
+        })
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
     }
 
     public async ValueTask DisposeAsync()

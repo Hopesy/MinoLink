@@ -31,6 +31,9 @@ public sealed class FeishuCardActionHandler(
         if (string.IsNullOrWhiteSpace(action) || string.IsNullOrWhiteSpace(sessionKey))
             return Task.FromResult(BuildToast(CardActionTriggerResponseDto.ToastSuffix.ToastType.Error, "缺少 action 或 session_key"));
 
+        if (action.StartsWith("ask:", StringComparison.Ordinal))
+            return Task.FromResult(HandleQuestionAction(action, sessionKey));
+
         if (!action.StartsWith("perm:", StringComparison.Ordinal))
             return Task.FromResult(BuildToast(CardActionTriggerResponseDto.ToastSuffix.ToastType.Info, "暂不支持此卡片操作"));
 
@@ -125,5 +128,30 @@ public sealed class FeishuCardActionHandler(
                 new DivElement().SetText(new PlainTextElement("权限请求已处理", null, null, null, null)),
             ]),
         });
+    }
+
+    private CardActionTriggerResponseDto HandleQuestionAction(string action, string sessionKey)
+    {
+        var parts = action.Split(':', 4);
+        if (parts.Length != 4 ||
+            !int.TryParse(parts[2], out var questionIndex) ||
+            !int.TryParse(parts[3], out var optionIndex))
+            return BuildToast(CardActionTriggerResponseDto.ToastSuffix.ToastType.Error, "问题动作格式错误");
+
+        var requestId = parts[1];
+        logger.LogInformation("收到飞书卡片问题回调: sessionKey={SessionKey}, requestId={RequestId}, questionIndex={QuestionIndex}, optionIndex={OptionIndex}",
+            sessionKey, requestId, questionIndex, optionIndex);
+
+        if (!engine.ResolveUserQuestionOption(sessionKey, requestId, questionIndex, optionIndex))
+            return BuildToast(CardActionTriggerResponseDto.ToastSuffix.ToastType.Error, "未找到待回答的问题，请重新发起");
+
+        return new CardActionTriggerResponseDto
+        {
+            Toast = new CardActionTriggerResponseDto.ToastSuffix
+            {
+                Type = CardActionTriggerResponseDto.ToastSuffix.ToastType.Success,
+                Content = "已提交回答",
+            },
+        };
     }
 }

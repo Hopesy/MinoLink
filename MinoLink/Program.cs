@@ -6,12 +6,23 @@ using MinoLink.ClaudeCode;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
 using MinoLink.Feishu;
+using MinoLink.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
 
 // 加载配置
 builder.Configuration.AddJsonFile("appsettings.json", optional: true);
 builder.Configuration.AddEnvironmentVariables("MINO_");
+
+var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+builder.Logging.ClearProviders();
+builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = true;
+    options.TimestampFormat = "HH:mm:ss ";
+});
+builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
 
 var config = builder.Configuration.GetSection("MinoLink").Get<MinoLinkConfig>()
     ?? throw new InvalidOperationException("配置缺失：请在 appsettings.json 中配置 MinoLink 节");

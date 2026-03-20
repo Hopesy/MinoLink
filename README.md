@@ -79,6 +79,13 @@ cd MinoLink
 dotnet run
 ```
 
+### 日志文件
+
+- MinoLink 运行时日志会同时输出到控制台和文件。
+- 日志目录：`MinoLink/bin/<配置>/<TFM>/logs/`
+- 日志文件名：`MinoLink-YYYYMMDD.log`
+- 如果你使用独立构建目录验证，例如 `-p:BaseOutputPath=artifacts/verify/`，对应日志也会落到该构建输出目录下的 `logs/`。
+
 ## 命令
 
 在聊天中发送 `/` 命令进行会话管理：
