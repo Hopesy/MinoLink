@@ -370,6 +370,7 @@ public sealed class Engine : IAsyncDisposable
             var answer = await pending.WaitAsync(ct);
             _logger.LogInformation("用户问题已回答: requestId={RequestId}, questionIndex={QuestionIndex}, answer={Answer}",
                 evt.RequestId, i, answer);
+            await platform.ReplyAsync(replyContext, $"✅ 已回答: {answer}", ct);
             answers[i] = answer;
         }
 
@@ -406,28 +407,25 @@ public sealed class Engine : IAsyncDisposable
             ? $"📝 {header} ({questionIndex + 1}/{totalQuestions})"
             : $"📝 {header}";
 
-        var elements = new List<CardElement>
-        {
-            new CardMarkdown(question.Question),
-        };
+        // 把问题文本和选项描述合到一个 markdown 块
+        var sb = new System.Text.StringBuilder();
+        sb.Append(question.Question);
 
         if (question.Options.Count > 0)
         {
-            // 展示选项描述（如果有的话）
             var hasDescriptions = question.Options.Any(o => !string.IsNullOrWhiteSpace(o.Description));
             if (hasDescriptions)
             {
-                var optionLines = question.Options
-                    .Select((o, i) => string.IsNullOrWhiteSpace(o.Description)
-                        ? $"**{i + 1}.** {o.Label}"
-                        : $"**{i + 1}.** {o.Label} — {o.Description}")
-                    .ToList();
-                elements.Add(new CardDivider());
-                elements.Add(new CardMarkdown(string.Join("\n", optionLines)));
+                sb.AppendLine();
+                foreach (var (o, i) in question.Options.Select((o, i) => (o, i)))
+                {
+                    sb.Append(string.IsNullOrWhiteSpace(o.Description)
+                        ? $"\n**{i + 1}.** {o.Label}"
+                        : $"\n**{i + 1}.** {o.Label} — {o.Description}");
+                }
             }
 
-            elements.Add(new CardDivider());
-            elements.Add(new CardMarkdown("_点击按钮选择，或直接回复文字自由输入_"));
+            sb.Append("\n_点击按钮或直接回复文字_");
 
             var buttons = question.Options
                 .Select((option, index) => new CardButton(option.Label, $"ask:{requestId}:{questionIndex}:{index}")
@@ -435,18 +433,19 @@ public sealed class Engine : IAsyncDisposable
                     Style = index == 0 ? "primary" : "default",
                 })
                 .ToArray();
-            elements.Add(new CardActions(buttons));
-        }
-        else
-        {
-            elements.Add(new CardDivider());
-            elements.Add(new CardMarkdown("_请直接回复文字作答_"));
+
+            return new Card
+            {
+                Title = title,
+                Elements = [new CardMarkdown(sb.ToString()), new CardActions(buttons)],
+            };
         }
 
+        sb.Append("\n_请直接回复文字作答_");
         return new Card
         {
             Title = title,
-            Elements = elements,
+            Elements = [new CardMarkdown(sb.ToString())],
         };
     }
 
@@ -454,32 +453,27 @@ public sealed class Engine : IAsyncDisposable
     {
         var sb = new System.Text.StringBuilder();
         var header = string.IsNullOrWhiteSpace(question.Header) ? "补充信息" : question.Header;
-        var line1 = totalQuestions > 1
+        sb.AppendLine(totalQuestions > 1
             ? $"📝 **{header}** ({questionIndex + 1}/{totalQuestions})"
-            : $"📝 **{header}**";
-        sb.AppendLine(line1);
-        sb.AppendLine(question.Question);
+            : $"📝 **{header}**");
+        sb.Append(question.Question);
 
         if (question.Options.Count > 0)
         {
-            sb.AppendLine();
             foreach (var (option, i) in question.Options.Select((o, i) => (o, i)))
             {
-                sb.Append($"  {i + 1}. {option.Label}");
+                sb.Append($"\n  {i + 1}. {option.Label}");
                 if (!string.IsNullOrWhiteSpace(option.Description))
                     sb.Append($" — {option.Description}");
-                sb.AppendLine();
             }
-            sb.AppendLine();
-            sb.Append("请回复选项序号或文字自由输入");
+            sb.Append("\n回复序号或文字自由输入");
         }
         else
         {
-            sb.AppendLine();
-            sb.Append("请直接回复文字作答");
+            sb.Append("\n请直接回复文字作答");
         }
 
-        return sb.ToString().TrimEnd();
+        return sb.ToString();
     }
 
     /// <summary>响应权限请求（由平台卡片回调触发）。</summary>
