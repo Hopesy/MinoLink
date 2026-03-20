@@ -110,6 +110,10 @@ public sealed class Engine : IAsyncDisposable
     /// <summary>消息处理核心逻辑。</summary>
     private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session)
     {
+        var workDirNotice = EnsureSessionWorkDir(session);
+        if (!string.IsNullOrWhiteSpace(workDirNotice))
+            await platform.ReplyAsync(msg.ReplyContext, workDirNotice, _cts.Token);
+
         _logger.LogInformation("[{Platform}] 创建/获取 Agent 会话: {SessionKey}", platform.Name, msg.SessionKey);
         var state = await GetOrCreateStateAsync(msg.SessionKey, session);
         _logger.LogInformation("[{Platform}] Agent 会话就绪: {SessionId}", platform.Name, state.AgentSession.SessionId);
@@ -162,11 +166,10 @@ public sealed class Engine : IAsyncDisposable
                 switch (evt.Type)
                 {
                     case AgentEventType.Thinking:
-                        // 冻结流式预览（保留当前内容，不删除）
                         if (previewHandle is not null && updater is not null)
                         {
                             await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
-                            previewHandle = null; // detach，后续不再更新此消息
+                            previewHandle = null;
                         }
                         var thinkingPreview = Truncate(evt.Content, 300);
                         await platform.ReplyAsync(replyContext, $"💭 {thinkingPreview}", ct);
@@ -191,7 +194,6 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.ToolUse:
-                        // 冻结流式预览（保留当前内容，不删除）
                         if (previewHandle is not null && updater is not null)
                         {
                             await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
@@ -208,32 +210,36 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.Result:
-                        // 在原预览消息上更新最终结果，不删除
                         var result = string.IsNullOrEmpty(evt.Content) ? textBuffer.ToString() : evt.Content;
                         if (previewHandle is not null && updater is not null)
                         {
-                            if (!string.IsNullOrWhiteSpace(result))
-                            {
-                                // 更新预览为最终内容（去掉光标符号）
-                                await updater.UpdateMessageAsync(previewHandle, Truncate(result, 4000), ct);
-                            }
+                            await updater.UpdateMessageAsync(previewHandle,
+                                BuildCompletedStatusMessage(Truncate(result, 4000), success: true), ct);
                             previewHandle = null;
                         }
                         else if (!string.IsNullOrWhiteSpace(result))
                         {
-                            // 没有预览消息时，直接发送新消息
-                            foreach (var chunk in SplitMessage(result, 4000))
+                            var finalText = BuildCompletedStatusMessage(Truncate(result, 4000), success: true);
+                            foreach (var chunk in SplitMessage(finalText, 4000))
                                 await platform.ReplyAsync(replyContext, chunk, ct);
                         }
                         return;
 
                     case AgentEventType.Error:
+                        var errorText = string.IsNullOrWhiteSpace(evt.Content)
+                            ? Truncate(textBuffer.ToString(), 2000)
+                            : $"❌ {evt.Content}";
                         if (previewHandle is not null && updater is not null)
                         {
-                            await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
+                            await updater.UpdateMessageAsync(previewHandle,
+                                BuildCompletedStatusMessage(errorText, success: false), ct);
                             previewHandle = null;
                         }
-                        await platform.ReplyAsync(replyContext, $"❌ {evt.Content}", ct);
+                        else
+                        {
+                            await platform.ReplyAsync(replyContext,
+                                BuildCompletedStatusMessage(errorText, success: false), ct);
+                        }
                         return;
                 }
             }
@@ -244,16 +250,18 @@ public sealed class Engine : IAsyncDisposable
         var pendingText = textBuffer.ToString();
         if (previewHandle is not null && updater is not null && !string.IsNullOrWhiteSpace(pendingText))
         {
-            await updater.UpdateMessageAsync(previewHandle, Truncate(pendingText, 4000), ct);
+            await updater.UpdateMessageAsync(previewHandle,
+                BuildCompletedStatusMessage(Truncate(pendingText, 4000), success: false), ct);
         }
         else if (!string.IsNullOrWhiteSpace(pendingText))
         {
-            foreach (var chunk in SplitMessage(pendingText, 4000))
+            foreach (var chunk in SplitMessage(BuildCompletedStatusMessage(pendingText, success: false), 4000))
                 await platform.ReplyAsync(replyContext, chunk, ct);
         }
         else
         {
-            await platform.ReplyAsync(replyContext, "⚠️ Agent 进程已退出，未返回结果。请检查 Claude CLI 日志。", ct);
+            await platform.ReplyAsync(replyContext,
+                BuildCompletedStatusMessage("⚠️ Agent 进程已退出，未返回结果。请检查 Claude CLI 日志。", success: false), ct);
         }
     }
 
@@ -333,6 +341,31 @@ public sealed class Engine : IAsyncDisposable
         _logger.LogInformation("权限回调已匹配: sessionKey={SessionKey}, requestId={RequestId}, allow={Allow}, allowAll={AllowAll}",
             sessionKey, requestId, response.Allow, response.AllowAll);
         return state.PendingPermission.Resolve(response);
+    }
+
+    private string? EnsureSessionWorkDir(SessionRecord session)
+    {
+        var configuredWorkDir = session.ProjectKey ?? _defaultWorkDir;
+        if (Directory.Exists(configuredWorkDir))
+            return null;
+
+        if (!Directory.Exists(_defaultWorkDir))
+        {
+            throw new InvalidOperationException(
+                $"会话工作目录不存在，且默认工作目录也不存在: `{configuredWorkDir}` / `{_defaultWorkDir}`。请使用 /project 重新设置工作目录。");
+        }
+
+        var previousWorkDir = configuredWorkDir;
+        session.ProjectKey = _defaultWorkDir;
+
+        // 原工作目录已经失效，旧 session id 与 continue 语义都不再可信，强制从默认目录启动新会话。
+        session.AgentSessionId = null;
+        _sessions.Save();
+
+        _logger.LogWarning("会话工作目录不存在，已回退到默认目录: missing={MissingWorkDir}, fallback={FallbackWorkDir}, sessionKey={SessionKey}",
+            previousWorkDir, _defaultWorkDir, session.SessionKey);
+
+        return $"⚠️ 原工作目录不存在，已切回默认目录：`{_defaultWorkDir}`";
     }
 
     private async Task<bool> TryHandlePendingPermissionTextAsync(IPlatform platform, Message msg)
@@ -475,7 +508,7 @@ public sealed class Engine : IAsyncDisposable
             // 验证目录存在
             if (workDir is not null)
             {
-                workDir = Path.GetFullPath(workDir);
+                workDir = ResolveProjectPath(workDir);
                 if (!Directory.Exists(workDir))
                 {
                     await platform.ReplyAsync(msg.ReplyContext,
@@ -745,7 +778,7 @@ public sealed class Engine : IAsyncDisposable
         }
 
         // 有参数：切换到指定路径
-        var targetDir = Path.GetFullPath(string.Join(' ', args));
+        var targetDir = ResolveProjectPath(string.Join(' ', args));
         if (!Directory.Exists(targetDir))
         {
             await platform.ReplyAsync(msg.ReplyContext,
@@ -853,6 +886,23 @@ public sealed class Engine : IAsyncDisposable
 
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "...";
+
+    private string ResolveProjectPath(string rawPath) => Path.IsPathRooted(rawPath)
+        ? Path.GetFullPath(rawPath)
+        : Path.GetFullPath(Path.Combine(_defaultWorkDir, rawPath));
+
+    private static string BuildCompletedStatusMessage(string content, bool success)
+    {
+        var timestamp = DateTime.Now.ToString("HH:mm:ss");
+        var status = success
+            ? $"✅ 已完成 · {timestamp}"
+            : $"❌ 处理结束 · {timestamp}";
+
+        if (string.IsNullOrWhiteSpace(content))
+            return status;
+
+        return $"{content}\n\n---\n{status}";
+    }
 
     private static IEnumerable<string> SplitMessage(string text, int maxLength)
     {

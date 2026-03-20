@@ -47,22 +47,29 @@
     "ProjectName": "my-project",
     "Agent": {
       "Type": "claudecode",
-      "WorkDir": "C:/path/to/your/project",
+      "WorkDir": "C:/Users/<你的用户名>/Desktop",
       "Mode": "default"
     },
     "Feishu": {
       "AppId": "<你的飞书 App ID>",
-      "AppSecret": "<你的飞书 App Secret>",
       "AllowFrom": "*"
     }
   }
 }
 ```
 
+敏感项建议使用 `dotnet user-secrets` 或环境变量注入，不要长期明文写在仓库配置中：
+
+```bash
+dotnet user-secrets set "MinoLink:Feishu:AppSecret" "<你的飞书 App Secret>" --project MinoLink/MinoLink.csproj
+dotnet user-secrets set "MinoLink:Feishu:VerificationToken" "<你的飞书 VerificationToken>" --project MinoLink/MinoLink.csproj
+```
+
 | 配置项 | 说明 |
 |---|---|
-| `Agent.WorkDir` | Claude Code 的工作目录 |
+| `Agent.WorkDir` | 默认工作目录。当前推荐直接设置为桌面目录，便于后续用 `/project hello` 快速切到桌面下的 `hello` |
 | `Agent.Mode` | 权限模式：`default` / `acceptEdits` / `plan` / `bypassPermissions` |
+| `Feishu.VerificationToken` | 飞书回调校验令牌。建议通过 `user-secrets` 注入 |
 | `Feishu.AllowFrom` | 白名单（`*` 允许所有，或逗号分隔的用户/群 ID） |
 
 ### 运行
@@ -88,6 +95,30 @@ dotnet run
 | `/project [路径]` | 查看/切换当前会话的工作目录 |
 | `/mode [模式]` | 查看/切换权限模式 |
 
+### `/new` 与 `/project` 的区别
+
+- `/new [名称] [--project 路径]`
+  - 创建一条全新的会话记录
+  - 销毁当前 Claude 会话
+  - 下一条消息会在新会话中重新启动 Claude
+  - 适合“从头开始一段新任务”
+- `/project [路径]`
+  - 保留当前会话记录，但切换该会话绑定的工作目录
+  - 会销毁当前 Claude 进程；下一条消息会在新目录重新启动 Claude
+  - 适合“继续当前会话语义，但换一个目录工作”
+
+### 目录解析与回退规则
+
+- 默认工作目录是 `Agent.WorkDir`。当前推荐直接设为桌面目录。
+- `/project hello` 和 `/new --project hello` 这类**相对路径**，会自动解析为“默认工作目录下的 `hello`”。
+  - 如果默认目录是桌面，则 `/project hello` 等价于切到 `C:/Users/<你>/Desktop/hello`
+- 如果传入的是绝对路径，则按绝对路径处理。
+- 如果会话原来绑定的目录后来被用户手动删除：
+  - MinoLink 会在启动 Claude 前先检查目录是否存在
+  - 若不存在，则自动回退到默认工作目录
+  - 同时清空失效的 Claude `session_id`，避免把旧目录的会话强行恢复到新目录
+  - 并向用户提示已回退到默认目录
+
 **权限模式**：
 
 | 输入 | 效果 |
@@ -108,7 +139,7 @@ dotnet run
    - **Text** → 流式预览（卡片实时更新）
    - **ToolUse** → 显示工具调用
    - **PermissionRequest** → 发送审批卡片，阻塞等待用户点击
-   - **Result** → 更新最终回复
+   - **Result** → 显示最终回复并补 `已完成` 标识
 
 ## 技术栈
 

@@ -16,6 +16,8 @@ builder.Configuration.AddEnvironmentVariables("MINO_");
 var config = builder.Configuration.GetSection("MinoLink").Get<MinoLinkConfig>()
     ?? throw new InvalidOperationException("配置缺失：请在 appsettings.json 中配置 MinoLink 节");
 
+var defaultWorkDir = ProgramHelpers.ResolveDefaultWorkDir(config.Agent.WorkDir);
+
 // 注册 Agent
 builder.Services.AddSingleton<IAgent>(sp =>
 {
@@ -34,7 +36,7 @@ builder.Services.AddSingleton<Engine>(sp =>
     var platforms = sp.GetServices<IPlatform>();
     var logger = sp.GetRequiredService<ILogger<Engine>>();
     var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
-    return new Engine(config.ProjectName ?? "default", agent, platforms, config.Agent.WorkDir, sessionStoragePath, logger);
+    return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessionStoragePath, logger);
 });
 
 // 注册飞书平台
@@ -91,7 +93,7 @@ sealed class MinoLinkConfig
 sealed class AgentConfig
 {
     public string Type { get; init; } = "claudecode";
-    public string WorkDir { get; init; } = ".";
+    public string WorkDir { get; init; } = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
     public string? Model { get; init; }
     public string? Mode { get; init; }
 }
@@ -102,4 +104,16 @@ sealed class FeishuConfig
     public string? AppSecret { get; init; }
     public string? VerificationToken { get; init; }
     public string? AllowFrom { get; init; }
+}
+
+static class ProgramHelpers
+{
+    public static string ResolveDefaultWorkDir(string? configuredWorkDir)
+    {
+        var desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (string.IsNullOrWhiteSpace(configuredWorkDir))
+            return desktopDir;
+
+        return Path.GetFullPath(configuredWorkDir);
+    }
 }
