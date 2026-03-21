@@ -1,17 +1,19 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MinoLink.ClaudeCode;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
+using MinoLink.Core.Models;
 using MinoLink.Feishu;
 using MinoLink.Logging;
+using MinoLink.Services;
+using MinoLink.Web.Components;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // 加载配置
-builder.Configuration.AddJsonFile("appsettings.json", optional: true);
+builder.Configuration.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
 builder.Configuration.AddEnvironmentVariables("MINO_");
 
 var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
@@ -29,6 +31,10 @@ var config = builder.Configuration.GetSection("MinoLink").Get<MinoLinkConfig>()
 
 var defaultWorkDir = ProgramHelpers.ResolveDefaultWorkDir(config.Agent.WorkDir);
 
+// 注册 ConfigService
+var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+builder.Services.AddSingleton<IConfigService>(new ConfigService(configPath, config));
+
 // 注册 Agent
 builder.Services.AddSingleton<IAgent>(sp =>
 {
@@ -40,14 +46,18 @@ builder.Services.AddSingleton<IAgent>(sp =>
     }, logger);
 });
 
+// 注册 SessionManager
+var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
+builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
+
 // 注册 Engine
 builder.Services.AddSingleton<Engine>(sp =>
 {
     var agent = sp.GetRequiredService<IAgent>();
     var platforms = sp.GetServices<IPlatform>();
+    var sessions = sp.GetRequiredService<SessionManager>();
     var logger = sp.GetRequiredService<ILogger<Engine>>();
-    var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
-    return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessionStoragePath, logger);
+    return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessions, logger);
 });
 
 // 注册飞书平台
@@ -66,12 +76,21 @@ if (config.Feishu is { AppId: not null and not "" })
     builder.Services.AddSingleton<IPlatform>(sp => sp.GetRequiredService<FeishuPlatform>());
 }
 
+// 注册 Blazor Server
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
 
 // 注册 HostedService
 builder.Services.AddHostedService<EngineHostedService>();
 
-var host = builder.Build();
-host.Run();
+var app = builder.Build();
+
+app.UseStaticFiles();
+app.UseAntiforgery();
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Run();
 
 // ── HostedService ─────────────────────────────────────────────
 
@@ -90,31 +109,6 @@ sealed class EngineHostedService(Engine engine, ILogger<EngineHostedService> log
         await engine.DisposeAsync();
         logger.LogInformation("MinoLink 已关闭");
     }
-}
-
-// ── 配置模型 ──────────────────────────────────────────────────
-
-sealed class MinoLinkConfig
-{
-    public string? ProjectName { get; init; }
-    public AgentConfig Agent { get; init; } = new();
-    public FeishuConfig? Feishu { get; init; }
-}
-
-sealed class AgentConfig
-{
-    public string Type { get; init; } = "claudecode";
-    public string WorkDir { get; init; } = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-    public string? Model { get; init; }
-    public string? Mode { get; init; }
-}
-
-sealed class FeishuConfig
-{
-    public string? AppId { get; init; }
-    public string? AppSecret { get; init; }
-    public string? VerificationToken { get; init; }
-    public string? AllowFrom { get; init; }
 }
 
 static class ProgramHelpers

@@ -28,12 +28,12 @@ public sealed class Engine : IAsyncDisposable
     private int _disposeState;
 
     public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
-        string defaultWorkDir, string sessionStoragePath, ILogger<Engine> logger)
+        string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger)
     {
         _projectName = projectName;
         _agent = agent;
         _platforms = platforms.ToList();
-        _sessions = new SessionManager(sessionStoragePath);
+        _sessions = sessions;
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
         _logger = logger;
     }
@@ -1197,6 +1197,29 @@ public sealed class Engine : IAsyncDisposable
     {
         for (var i = 0; i < text.Length; i += maxLength)
             yield return text.Substring(i, Math.Min(maxLength, text.Length - i));
+    }
+
+    /// <summary>获取所有活跃会话的状态快照。</summary>
+    public IReadOnlyList<SessionStatus> GetActiveStatuses()
+    {
+        var result = new List<SessionStatus>();
+        foreach (var (sessionKey, _) in _sessionLocks)
+        {
+            var session = _sessions.GetActive(sessionKey);
+            if (session is null) continue;
+
+            var isProcessing = _sessionLocks.TryGetValue(sessionKey, out var sem) && sem.CurrentCount == 0;
+            result.Add(new SessionStatus(
+                sessionKey,
+                session.FromName ?? session.From,
+                session.Platform,
+                session.ProjectKey,
+                session.CreatedAt,
+                session.LastActiveAt,
+                isProcessing));
+        }
+
+        return result;
     }
 
     public async ValueTask DisposeAsync()

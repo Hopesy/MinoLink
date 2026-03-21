@@ -1,0 +1,147 @@
+@page "/config"
+@using MinoLink.Core.Interfaces
+@inject IConfigService ConfigService
+
+<div class="page-header">
+    <h1><span class="hl">系统</span>配置</h1>
+    <p class="subtitle">管理 Agent 运行参数与飞书平台凭证。</p>
+    <span class="deco deco-tag deco-float">&#9881;&#65039;</span>
+</div>
+
+<div class="config-grid">
+    <div class="config-card accent-purple">
+        <div class="config-card-header">
+            <span class="icon">&#129302;</span> Agent 配置
+        </div>
+        <div class="form-group">
+            <label>工作目录</label>
+            <input type="text" @bind="_workDir" />
+        </div>
+        <div class="form-group">
+            <label>权限模式</label>
+            <select @bind="_mode">
+                <option value="default">默认（每次操作需确认）</option>
+                <option value="acceptEdits">自动接受编辑</option>
+                <option value="plan">规划模式（只读）</option>
+                <option value="bypassPermissions">自动批准（YOLO）</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>模型</label>
+            <input type="text" @bind="_model" placeholder="例如 claude-sonnet-4-20250514" />
+        </div>
+        <div class="form-actions">
+            <button class="btn-primary" @onclick="SaveAgent">保存 Agent 配置</button>
+        </div>
+        @if (_agentSaved)
+        {
+            <div class="alert alert-success">已保存，下次会话时生效。</div>
+        }
+    </div>
+
+    <div class="config-card accent-blue">
+        <div class="config-card-header">
+            <span class="icon">&#128172;</span> 飞书配置
+        </div>
+        <div class="form-group">
+            <label>App ID</label>
+            <input type="text" @bind="_appId" />
+        </div>
+        <div class="form-group">
+            <label>App Secret</label>
+            @if (_editSecret)
+            {
+                <input type="text" @bind="_appSecret" />
+            }
+            else
+            {
+                <div class="masked-field">
+                    <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+                    <button class="btn-small" @onclick="() => _editSecret = true">编辑</button>
+                </div>
+            }
+        </div>
+        <div class="form-group">
+            <label>Verification Token</label>
+            @if (_editToken)
+            {
+                <input type="text" @bind="_verificationToken" />
+            }
+            else
+            {
+                <div class="masked-field">
+                    <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+                    <button class="btn-small" @onclick="() => _editToken = true">编辑</button>
+                </div>
+            }
+        </div>
+        <div class="form-group">
+            <label>允许的用户</label>
+            <input type="text" @bind="_allowFrom" placeholder="* 表示所有用户" />
+        </div>
+        <div class="form-actions">
+            <button class="btn-primary" @onclick="SaveFeishu">保存飞书配置</button>
+        </div>
+        @if (_feishuSaved)
+        {
+            <div class="alert alert-warning">已保存，需要重启服务后生效。</div>
+        }
+    </div>
+</div>
+
+@code {
+    // Agent
+    private string _workDir = "";
+    private string _mode = "default";
+    private string _model = "";
+    private bool _agentSaved;
+
+    // Feishu
+    private string _appId = "";
+    private string _appSecret = "";
+    private string _verificationToken = "";
+    private string _allowFrom = "*";
+    private bool _editSecret;
+    private bool _editToken;
+    private bool _feishuSaved;
+
+    protected override void OnInitialized()
+    {
+        var config = ConfigService.GetConfig();
+        _workDir = config.Agent.WorkDir;
+        _mode = config.Agent.Mode ?? "default";
+        _model = config.Agent.Model ?? "";
+
+        if (config.Feishu is { } feishu)
+        {
+            _appId = feishu.AppId ?? "";
+            _appSecret = feishu.AppSecret ?? "";
+            _verificationToken = feishu.VerificationToken ?? "";
+            _allowFrom = feishu.AllowFrom ?? "*";
+        }
+    }
+
+    private void SaveAgent()
+    {
+        ConfigService.UpdateConfig(c =>
+        {
+            c.Agent.WorkDir = _workDir;
+            c.Agent.Mode = _mode;
+            c.Agent.Model = string.IsNullOrWhiteSpace(_model) ? null : _model;
+        });
+        _agentSaved = true;
+    }
+
+    private void SaveFeishu()
+    {
+        ConfigService.UpdateConfig(c =>
+        {
+            if (c.Feishu is null) c.Feishu = new MinoLink.Core.Models.FeishuConfig();
+            c.Feishu.AppId = _appId;
+            if (_editSecret) c.Feishu.AppSecret = _appSecret;
+            if (_editToken) c.Feishu.VerificationToken = _verificationToken;
+            c.Feishu.AllowFrom = _allowFrom;
+        });
+        _feishuSaved = true;
+    }
+}

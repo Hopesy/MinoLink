@@ -1,0 +1,116 @@
+@page "/sessions"
+@using MinoLink.Core
+@using MinoLink.Core.Models
+@inject Engine Engine
+@inject SessionManager SessionManager
+
+<div class="page-header">
+    <h1>会话<span class="hl">管理</span></h1>
+    <p class="subtitle">查看和管理所有 Agent 会话。</p>
+    <span class="deco deco-tag deco-wiggle">&#128172;</span>
+</div>
+
+<div class="filter-bar">
+    <label>平台筛选：</label>
+    <select @bind="_platformFilter">
+        <option value="">全部</option>
+        @foreach (var p in _platforms)
+        {
+            <option value="@p">@p</option>
+        }
+    </select>
+</div>
+
+@if (FilteredSessions.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">&#128193;</div>
+        <p>暂无会话记录。</p>
+    </div>
+}
+else
+{
+    <div class="data-table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>用户</th>
+                    <th>平台</th>
+                    <th>会话名称</th>
+                    <th>工作目录</th>
+                    <th>创建时间</th>
+                    <th>最后活跃</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in FilteredSessions)
+                {
+                    <tr>
+                        <td>@(s.FromName ?? s.From ?? "-")</td>
+                        <td>@(s.Platform ?? "-")</td>
+                        <td>@(s.Name ?? "-")</td>
+                        <td class="mono">@(s.ProjectKey ?? "-")</td>
+                        <td>@s.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                        <td>@s.LastActiveAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                        <td>
+                            @if (_confirmDelete == s.SessionKey)
+                            {
+                                <button class="btn-danger btn-small" @onclick="() => ConfirmDelete(s.SessionKey)">确认删除</button>
+                                <button class="btn-small" @onclick="() => _confirmDelete = null">取消</button>
+                            }
+                            else
+                            {
+                                <button class="btn-small" @onclick="() => _confirmDelete = s.SessionKey">删除</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<SessionRecord> _allSessions = [];
+    private HashSet<string> _platforms = [];
+    private string _platformFilter = "";
+    private string? _confirmDelete;
+
+    private List<SessionRecord> FilteredSessions =>
+        string.IsNullOrEmpty(_platformFilter)
+            ? _allSessions
+            : _allSessions.Where(s => s.Platform == _platformFilter).ToList();
+
+    protected override void OnInitialized()
+    {
+        LoadSessions();
+    }
+
+    private void LoadSessions()
+    {
+        var statuses = Engine.GetActiveStatuses();
+        _allSessions = [];
+        _platforms = [];
+
+        foreach (var status in statuses)
+        {
+            var (sessions, _) = SessionManager.GetAllSessions(status.SessionKey);
+            foreach (var session in sessions)
+            {
+                _allSessions.Add(session);
+                if (session.Platform is not null)
+                    _platforms.Add(session.Platform);
+            }
+        }
+
+        _allSessions = _allSessions.OrderByDescending(s => s.LastActiveAt).ToList();
+    }
+
+    private void ConfirmDelete(string sessionKey)
+    {
+        SessionManager.RemoveActive(sessionKey);
+        _confirmDelete = null;
+        LoadSessions();
+    }
+}

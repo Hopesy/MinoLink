@@ -1,0 +1,115 @@
+@page "/"
+@using MinoLink.Core
+@using MinoLink.Core.Interfaces
+@using MinoLink.Core.Models
+@inject Engine Engine
+@inject IConfigService ConfigService
+
+<div class="hero">
+    <div class="hero-text">
+        <h1>
+            MinoLink<br/>
+            <span class="hl">让 Agent</span> 更简单
+        </h1>
+        <p class="hero-desc">
+            飞书驱动的 Claude Code 远程管理服务。无需本地终端，权限可控，WebSocket 实时交互。
+        </p>
+        <div class="hero-actions">
+            <a href="config" class="btn-cta">开始配置 &rarr;</a>
+            <a href="sessions" class="hero-link">查看会话</a>
+        </div>
+        <div class="feature-row">
+            <div class="feature-item"><span style="color:var(--amber);">&#9889;</span> 实时事件流</div>
+            <div class="feature-item"><span style="color:var(--green);">&#9679;</span> 权限管控</div>
+            <div class="feature-item"><span style="color:var(--blue);">&#9673;</span> 多平台支持</div>
+        </div>
+    </div>
+
+    <div class="hero-cards">
+        <span class="deco deco-tl deco-wiggle">&#127775;</span>
+        <span class="deco deco-br deco-bounce">&#129412;</span>
+        <div class="float-notify">
+            <span>&#128225;</span>
+            <div>
+                <div class="notify-label">引擎状态</div>
+                <div class="notify-value">运行中</div>
+            </div>
+        </div>
+        <div class="float-card">
+            <div class="float-card-header">
+                <span class="icon">&#11088;</span> 系统概览
+            </div>
+            <div class="float-input" style="display:flex; justify-content:space-between; cursor:default;">
+                <span style="color:var(--text-3);">活跃会话</span>
+                <span style="font-weight:700;">@_statuses.Count 个</span>
+            </div>
+            <div class="float-input" style="display:flex; justify-content:space-between; cursor:default;">
+                <span style="color:var(--text-3);">Agent 类型</span>
+                <span style="font-weight:700;">@_config.Agent.Type</span>
+            </div>
+            <div class="float-btn" style="cursor:default;">
+                &#9881; 当前模式：@(_config.Agent.Mode ?? "default")
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="section-header">
+    <h2>&#128203; 最近活跃会话</h2>
+</div>
+
+@if (_statuses.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">&#128564;</div>
+        <p>暂无活跃会话，通过飞书发送消息即可开始。</p>
+    </div>
+}
+else
+{
+    <div class="data-table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>用户</th>
+                    <th>平台</th>
+                    <th>工作目录</th>
+                    <th>最后活跃</th>
+                    <th>状态</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in _statuses.OrderByDescending(x => x.LastActiveAt).Take(5))
+                {
+                    <tr>
+                        <td>@(s.UserName ?? "-")</td>
+                        <td>@(s.Platform ?? "-")</td>
+                        <td class="mono">@(s.WorkDir ?? "-")</td>
+                        <td>@s.LastActiveAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                        <td>
+                            @if (s.IsProcessing)
+                            {
+                                <span class="badge badge-active">处理中</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-idle">空闲</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private MinoLinkConfig _config = null!;
+    private IReadOnlyList<SessionStatus> _statuses = [];
+
+    protected override void OnInitialized()
+    {
+        _config = ConfigService.GetConfig();
+        _statuses = Engine.GetActiveStatuses();
+    }
+}

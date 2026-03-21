@@ -1,0 +1,21 @@
+@inherits LayoutComponentBase
+
+<div class="layout">
+    <nav class="topnav">
+        <div class="nav-left">
+            <div class="nav-brand">Mino<span class="dot">Link</span></div>
+            <div class="nav-links">
+                <NavLink href="" Match="NavLinkMatch.All">概览</NavLink>
+                <NavLink href="config">配置</NavLink>
+                <NavLink href="sessions">会话管理</NavLink>
+            </div>
+        </div>
+        <div class="nav-right">
+            <span class="nav-dot"></span>
+            <span class="nav-status-text">运行中</span>
+        </div>
+    </nav>
+    <main class="main-content">
+        @Body
+    </main>
+</div>

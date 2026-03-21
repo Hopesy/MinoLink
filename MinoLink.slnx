@@ -2,5 +2,6 @@
   <Project Path="MinoLink.ClaudeCode/MinoLink.ClaudeCode.csproj" />
   <Project Path="MinoLink.Core/MinoLink.Core.csproj" />
   <Project Path="MinoLink.Feishu/MinoLink.Feishu.csproj" />
+  <Project Path="MinoLink.Web/MinoLink.Web.csproj" />
   <Project Path="MinoLink/MinoLink.csproj" />
 </Solution>
