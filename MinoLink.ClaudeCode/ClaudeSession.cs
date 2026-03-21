@@ -25,6 +25,7 @@ public sealed class ClaudeSession : IAgentSession
     private StreamWriter? _stdin;
     private string _sessionId;
     private readonly bool _useContinue;
+    private readonly TaskCompletionSource<string> _sessionIdReady = new();
 
     public string SessionId => _sessionId;
     public ChannelReader<AgentEvent> Events => _eventChannel.Reader;
@@ -39,7 +40,7 @@ public sealed class ClaudeSession : IAgentSession
         _useContinue = useContinue;
     }
 
-    public Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken ct)
     {
         var args = BuildArgs();
         _logger.LogInformation("启动 claude 进程: claude {Args}", string.Join(" ", args));
@@ -69,7 +70,17 @@ public sealed class ClaudeSession : IAgentSession
         // 后台读取 stdout 事件流
         _ = Task.Run(() => ReadLoopAsync(_process.StandardOutput), _cts.Token);
 
-        return Task.CompletedTask;
+        // 等待 system 事件返回 session_id，确保 SessionId 可用
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            await _sessionIdReady.Task.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("等待 session_id 超时（30s），将使用初始值: {SessionId}", _sessionId);
+        }
     }
 
     public async Task SendAsync(string content, IReadOnlyList<string>? images = null, CancellationToken ct = default)
@@ -168,6 +179,7 @@ public sealed class ClaudeSession : IAgentSession
         }
         finally
         {
+            _sessionIdReady.TrySetCanceled();
             writer.TryComplete();
         }
     }
@@ -180,6 +192,7 @@ public sealed class ClaudeSession : IAgentSession
             if (!string.IsNullOrEmpty(id))
             {
                 _sessionId = id;
+                _sessionIdReady.TrySetResult(id);
                 _logger.LogDebug("会话 ID 更新: {SessionId}", id);
             }
         }
