@@ -39,31 +39,44 @@ Default `http://localhost:5000`, localhost only, no authentication.
 
 ## Core Layer Changes
 
+### Config Model
+
+The existing `MinoLinkConfig` type (currently defined locally in `MinoLink/Program.cs`) must be moved to `MinoLink.Core/Models/MinoLinkConfig.cs` so the Web layer can reference it.
+
 ### IConfigService (new)
 
 ```csharp
 // MinoLink.Core/Interfaces/IConfigService.cs
 public interface IConfigService
 {
-    MinoLinkOptions GetConfig();
-    void UpdateConfig(Action<MinoLinkOptions> update);
+    MinoLinkConfig GetConfig();
+    void UpdateConfig(Action<MinoLinkConfig> update);
 }
 ```
 
-Implementation reads/writes `appsettings.json` and triggers hot reload via `IOptionsMonitor<T>`.
+Implementation (in `MinoLink` host project) reads/writes `appsettings.json` directly. **Hot reload scope:** Agent WorkDir and Mode can be applied at runtime (Engine reads these per-session). Feishu credentials require a full application restart (the Feishu config page will display a restart notice).
+
+### SessionManager DI Registration
+
+`SessionManager` is currently instantiated manually inside `Engine`'s constructor as a private field. It must be extracted and registered as a singleton in DI so both `Engine` and the Web layer can inject it. `Engine` will receive `SessionManager` via constructor injection instead of creating it internally.
 
 ### Engine Status Query (new)
 
 ```csharp
+// MinoLink.Core/Models/SessionStatus.cs
+public sealed record SessionStatus(
+    string SessionKey,
+    string? UserName,
+    string? Platform,
+    DateTimeOffset LastActiveAt,
+    bool IsProcessing
+);
+
 // Engine adds:
 public IReadOnlyCollection<SessionStatus> GetActiveStatuses();
 ```
 
-Returns read-only snapshot of active session statuses (session key, user name, platform, last active time, whether currently processing).
-
-### SessionManager
-
-Already exposes `GetAllSessions`, `RemoveActive`, `SwitchTo`. Web layer injects directly, no new interfaces needed.
+Data sources: `UserName`/`Platform`/`LastActiveAt` from `SessionManager` records, `IsProcessing` from `Engine._sessionLocks` (whether the semaphore is currently held).
 
 ## UI Design
 
@@ -95,7 +108,7 @@ Top fixed navbar with Logo + 4 page links: Dashboard, Agent, Feishu, Sessions.
   - WorkDir (text input)
   - Mode (dropdown: default / acceptEdits / plan / bypassPermissions)
   - Model (text input, optional)
-- Save button at bottom, changes take effect immediately via hot reload
+- Save button at bottom, changes take effect immediately (WorkDir/Mode applied per-session, no restart needed)
 
 #### Feishu Config `/feishu`
 
