@@ -43,16 +43,17 @@ public sealed class ClaudeSession : IAgentSession
     public async Task StartAsync(CancellationToken ct)
     {
         var args = BuildArgs();
-        _logger.LogInformation("启动 claude 进程: claude {Args}", string.Join(" ", args));
+        var claudePath = ResolveClaudePath();
+        _logger.LogInformation("启动 claude 进程: {Path} {Args}", claudePath, string.Join(" ", args));
 
-        var psi = new ProcessStartInfo("claude")
+        var psi = new ProcessStartInfo(claudePath)
         {
             WorkingDirectory = _workDir,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = false,   // stderr 不重定向，直接显示在窗口中便于排查
+            RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = false,           // 显示 claude 进程窗口
+            CreateNoWindow = true,
             StandardOutputEncoding = Encoding.UTF8,
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
@@ -69,6 +70,17 @@ public sealed class ClaudeSession : IAgentSession
 
         // 后台读取 stdout 事件流
         _ = Task.Run(() => ReadLoopAsync(_process.StandardOutput), _cts.Token);
+
+        // 后台消费 stderr，避免缓冲区满导致死锁
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (await _process.StandardError.ReadLineAsync(_cts.Token) is { } errLine)
+                    _logger.LogDebug("claude stderr: {Line}", errLine);
+            }
+            catch { /* 进程退出或取消 */ }
+        }, _cts.Token);
 
         // 等待 system 事件返回 session_id，确保 SessionId 可用
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -522,6 +534,82 @@ public sealed class ClaudeSession : IAgentSession
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 解析 claude CLI 的完整路径。
+    /// npm 全局安装时，claude.cmd 位于 %AppData%\npm 目录。
+    /// 当以 MSI 安装包运行时，进程 PATH 可能不包含 npm 全局路径，需要主动查找。
+    /// </summary>
+    private string ResolveClaudePath()
+    {
+        if (!OperatingSystem.IsWindows())
+            return "claude";
+
+        // 优先检查 PATH 中是否可直接找到
+        var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var dir in pathDirs)
+        {
+            var cmdPath = Path.Combine(dir, "claude.cmd");
+            if (File.Exists(cmdPath)) return cmdPath;
+            var exePath = Path.Combine(dir, "claude.exe");
+            if (File.Exists(exePath)) return exePath;
+        }
+
+        // PATH 中找不到，尝试常见的 npm 全局安装位置
+        var candidates = new List<string>();
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrEmpty(appData))
+        {
+            candidates.Add(Path.Combine(appData, "npm", "claude.cmd"));
+        }
+
+        // fnm / nvm 等 Node 版本管理器的路径
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrEmpty(localAppData))
+        {
+            candidates.Add(Path.Combine(localAppData, "fnm_multishells", "*", "claude.cmd"));
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(userProfile))
+        {
+            candidates.Add(Path.Combine(userProfile, ".npm-global", "claude.cmd"));
+            candidates.Add(Path.Combine(userProfile, "AppData", "Roaming", "npm", "claude.cmd"));
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Contains('*'))
+            {
+                // 通配符路径，用 Directory.GetFiles 搜索
+                var dir = Path.GetDirectoryName(Path.GetDirectoryName(candidate));
+                if (dir is not null && Directory.Exists(dir))
+                {
+                    try
+                    {
+                        var found = Directory.GetFiles(dir, "claude.cmd", SearchOption.AllDirectories);
+                        if (found.Length > 0)
+                        {
+                            _logger.LogInformation("在 Node 版本管理器目录找到 claude CLI: {Path}", found[0]);
+                            return found[0];
+                        }
+                    }
+                    catch { /* 忽略搜索错误 */ }
+                }
+            }
+            else if (File.Exists(candidate))
+            {
+                _logger.LogInformation("在 npm 全局目录找到 claude CLI: {Path}", candidate);
+                return candidate;
+            }
+        }
+
+        _logger.LogWarning("未在 PATH 和常见位置找到 claude CLI，将尝试直接使用 'claude' 命令");
+        return "claude";
     }
 
     public async ValueTask DisposeAsync()

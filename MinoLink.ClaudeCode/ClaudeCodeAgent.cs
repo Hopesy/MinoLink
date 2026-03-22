@@ -24,7 +24,7 @@ public sealed class ClaudeCodeAgent : IAgent
         _mode = NormalizeMode(options.Mode);
         _logger = logger;
 
-        // 验证 claude CLI 可用
+        // 验证 claude CLI 可用（仅警告，不阻断启动）
         ValidateCliAvailable();
     }
 
@@ -64,10 +64,10 @@ public sealed class ClaudeCodeAgent : IAgent
             proc?.WaitForExit(5000);
             _logger.LogInformation("Claude CLI 可用, mode={Mode}", _mode);
         }
-        catch
+        catch (Exception ex)
         {
-            throw new InvalidOperationException(
-                "找不到 'claude' CLI，请先安装 Claude Code: npm install -g @anthropic-ai/claude-code");
+            _logger.LogError(ex, "找不到 'claude' CLI，请先安装 Claude Code: npm install -g @anthropic-ai/claude-code。" +
+                "消息将无法处理，直到 claude CLI 可用。");
         }
     }
 

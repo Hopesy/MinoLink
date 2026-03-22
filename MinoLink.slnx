@@ -4,4 +4,6 @@
   <Project Path="MinoLink.Feishu/MinoLink.Feishu.csproj" />
   <Project Path="MinoLink.Web/MinoLink.Web.csproj" />
   <Project Path="MinoLink/MinoLink.csproj" />
+  <Project Path="MinoLink.Desktop/MinoLink.Desktop.csproj" />
+  <Project Path="MinoLink.Installer/MinoLink.Installer.csproj" />
 </Solution>

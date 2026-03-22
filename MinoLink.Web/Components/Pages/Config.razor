@@ -75,10 +75,6 @@
                 </div>
             }
         </div>
-        <div class="form-group">
-            <label>允许的用户</label>
-            <input type="text" @bind="_allowFrom" placeholder="* 表示所有用户" />
-        </div>
         <div class="form-actions">
             <button class="btn-primary" @onclick="SaveFeishu">保存飞书配置</button>
         </div>
@@ -100,7 +96,6 @@
     private string _appId = "";
     private string _appSecret = "";
     private string _verificationToken = "";
-    private string _allowFrom = "*";
     private bool _editSecret;
     private bool _editToken;
     private bool _feishuSaved;
@@ -117,7 +112,6 @@
             _appId = feishu.AppId ?? "";
             _appSecret = feishu.AppSecret ?? "";
             _verificationToken = feishu.VerificationToken ?? "";
-            _allowFrom = feishu.AllowFrom ?? "*";
         }
     }
 
@@ -140,7 +134,6 @@
             c.Feishu.AppId = _appId;
             if (_editSecret) c.Feishu.AppSecret = _appSecret;
             if (_editToken) c.Feishu.VerificationToken = _verificationToken;
-            c.Feishu.AllowFrom = _allowFrom;
         });
         _feishuSaved = true;
     }

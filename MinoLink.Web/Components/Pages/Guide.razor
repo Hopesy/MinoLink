@@ -1,0 +1,184 @@
+@page "/guide"
+
+<div class="guide-layout">
+    <aside class="guide-sidebar">
+        <div class="guide-toc-title">目录</div>
+        <nav class="guide-toc">
+            <a href="guide#quick-start" class="guide-toc-item active">快速开始</a>
+            <a href="guide#create-app" class="guide-toc-item">创建飞书应用</a>
+            <a href="guide#credentials" class="guide-toc-item">获取凭证</a>
+            <a href="guide#bot-capability" class="guide-toc-item">添加机器人能力</a>
+            <a href="guide#permissions" class="guide-toc-item">配置权限</a>
+            <a href="guide#event-subscription" class="guide-toc-item">事件订阅</a>
+            <a href="guide#publish" class="guide-toc-item">发布应用</a>
+            <a href="guide#start-using" class="guide-toc-item">开始使用</a>
+            <a href="guide#commands" class="guide-toc-item">聊天命令</a>
+            <a href="guide#permission-modes" class="guide-toc-item">权限模式</a>
+        </nav>
+    </aside>
+
+    <main class="guide-main">
+        <div class="guide-hero">
+            <p>MinoLink 通过飞书 WebSocket 长连接接入，无需公网服务器和回调地址。按照以下步骤完成配置，即可在飞书中与 Claude Code 对话。</p>
+        </div>
+
+        <section id="quick-start">
+            <div class="guide-section-header">
+                <span class="guide-section-num">1</span>
+                <h2>快速开始</h2>
+            </div>
+            <p>完整流程只需三步：</p>
+            <ol class="guide-ol">
+                <li>在飞书开放平台创建应用，获取 App ID / App Secret / Verification Token</li>
+                <li>将凭证填入 MinoLink <a href="config">配置页面</a></li>
+                <li>重启 MinoLink，在飞书中找到机器人发送消息</li>
+            </ol>
+        </section>
+
+        <section id="create-app">
+            <div class="guide-section-header">
+                <span class="guide-section-num">2</span>
+                <h2>创建飞书应用</h2>
+            </div>
+            <p>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noopener">飞书开放平台</a>，点击 <strong>创建企业自建应用</strong>，填写应用名称和描述。</p>
+        </section>
+
+        <section id="credentials">
+            <div class="guide-section-header">
+                <span class="guide-section-num">3</span>
+                <h2>获取凭证</h2>
+            </div>
+            <p>进入应用详情页，在以下位置找到三个凭证值：</p>
+            <div class="guide-cards-row">
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">App ID</div>
+                    <p>凭证与基础信息页面</p>
+                    <code>cli_a1b2c3d4e5f6</code>
+                </div>
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">App Secret</div>
+                    <p>凭证与基础信息页面</p>
+                    <code>xxxxxxxxxxxxxxxx</code>
+                </div>
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">Verification Token</div>
+                    <p>事件与回调 &rarr; 加密策略</p>
+                    <code>xxxxxxxxxxxxxxxx</code>
+                </div>
+            </div>
+            <p>将这三个值填入 MinoLink 的 <a href="config">配置页面</a> 对应字段中，保存后重启生效。</p>
+        </section>
+
+        <section id="bot-capability">
+            <div class="guide-section-header">
+                <span class="guide-section-num">4</span>
+                <h2>添加机器人能力</h2>
+            </div>
+            <p>应用详情 &rarr; <strong>添加应用能力</strong> &rarr; 选择 <strong>机器人</strong>。添加后用户才能在飞书中搜索并与机器人对话。</p>
+        </section>
+
+        <section id="permissions">
+            <div class="guide-section-header">
+                <span class="guide-section-num">5</span>
+                <h2>配置权限</h2>
+            </div>
+            <p>应用详情 &rarr; <strong>权限管理</strong>，搜索并开通以下权限：</p>
+            <div class="guide-code-block">
+                <div class="guide-code-bar">
+                    <span class="guide-code-dots"><i></i><i></i><i></i></span>
+                    <span>所需权限</span>
+                </div>
+                <div class="guide-code-body">
+                    <div>im:message</div>
+                    <div>im:message:send_as_bot</div>
+                    <div>im:message.p2p_msg:readonly</div>
+                    <div>im:message.group_msg:readonly</div>
+                    <div>im:resource</div>
+                    <div>im:chat:readonly</div>
+                </div>
+            </div>
+        </section>
+
+        <section id="event-subscription">
+            <div class="guide-section-header">
+                <span class="guide-section-num">6</span>
+                <h2>事件订阅</h2>
+            </div>
+            <p>应用详情 &rarr; <strong>事件与回调</strong>：</p>
+            <ol class="guide-ol">
+                <li>事件配置方式选择 <strong>使用长连接接收事件</strong></li>
+                <li>添加事件 <code>im.message.receive_v1</code>（接收消息）</li>
+                <li>添加事件 <code>card.action.trigger</code>（卡片按钮回调）</li>
+            </ol>
+            <div class="guide-tip">
+                MinoLink 使用 WebSocket 长连接接收消息和卡片回调，无需配置公网回调地址，本地运行即可。<code>card.action.trigger</code> 用于处理权限审批卡片上的按钮交互。
+            </div>
+        </section>
+
+        <section id="publish">
+            <div class="guide-section-header">
+                <span class="guide-section-num">7</span>
+                <h2>发布应用</h2>
+            </div>
+            <p>应用详情 &rarr; <strong>版本管理与发布</strong> &rarr; 创建版本并提交审核。企业内部应用通常自动审核通过。</p>
+        </section>
+
+        <section id="start-using">
+            <div class="guide-section-header">
+                <span class="guide-section-num">8</span>
+                <h2>开始使用</h2>
+            </div>
+            <p>确保本机已安装 <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code CLI</a>，然后重启 MinoLink。在飞书中搜索你的机器人名称，发送任意消息即可开始对话。</p>
+        </section>
+
+        <section id="commands">
+            <div class="guide-section-header">
+                <span class="guide-section-num">9</span>
+                <h2>聊天命令</h2>
+            </div>
+            <p>在飞书聊天中发送 <code>/</code> 命令进行会话管理：</p>
+            <div class="guide-table-wrap">
+                <table class="guide-table">
+                    <thead><tr><th>命令</th><th>说明</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>/new [名称]</code></td><td>创建新会话</td></tr>
+                        <tr><td><code>/stop</code></td><td>中断当前回复（远程 Ctrl+C）</td></tr>
+                        <tr><td><code>/clear</code></td><td>清除对话历史</td></tr>
+                        <tr><td><code>/continue</code></td><td>继续最近一次会话</td></tr>
+                        <tr><td><code>/resume</code></td><td>列出所有会话</td></tr>
+                        <tr><td><code>/switch N</code></td><td>切换到第 N 个会话</td></tr>
+                        <tr><td><code>/project [路径]</code></td><td>查看/切换工作目录</td></tr>
+                        <tr><td><code>/mode [模式]</code></td><td>切换权限模式</td></tr>
+                        <tr><td><code>/help</code></td><td>显示命令列表</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="permission-modes">
+            <div class="guide-section-header">
+                <span class="guide-section-num">10</span>
+                <h2>权限模式</h2>
+            </div>
+            <p>通过 <code>/mode</code> 命令或配置页面切换：</p>
+            <div class="guide-cards-row">
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">default</div>
+                    <p>每次操作需确认，最安全。</p>
+                </div>
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">acceptEdits</div>
+                    <p>自动接受文件编辑操作。</p>
+                </div>
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">plan</div>
+                    <p>只读规划模式，不执行操作。</p>
+                </div>
+                <div class="guide-info-card">
+                    <div class="guide-info-card-title">yolo</div>
+                    <p>自动批准所有操作（YOLO）。</p>
+                </div>
+            </div>
+        </section>
+    </main>
+</div>

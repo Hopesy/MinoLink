@@ -27,7 +27,10 @@
 | `MinoLink.Core` | 核心接口、模型、Engine、SessionManager |
 | `MinoLink.ClaudeCode` | Claude Code CLI 适配器（子进程 JSON 流通信） |
 | `MinoLink.Feishu` | 飞书平台适配器（WebSocket 长连接） |
-| `MinoLink` | 主机入口（Generic Host + 配置加载） |
+| `MinoLink.Web` | Blazor 组件库（Dashboard / Config / Sessions 页面） |
+| `MinoLink` | Web 主机入口（ASP.NET Core Blazor Server） |
+| `MinoLink.Desktop` | WPF 桌面客户端（BlazorWebView + 系统托盘） |
+| `MinoLink.Installer` | WixSharp MSI 安装包生成器 |
 
 ## 快速开始
 
@@ -74,10 +77,66 @@ dotnet user-secrets set "MinoLink:Feishu:VerificationToken" "<你的飞书 Verif
 
 ### 运行
 
+**Web 模式**（Blazor Server）：
+
 ```bash
 cd MinoLink
 dotnet run
 ```
+
+**桌面模式**（WPF + BlazorWebView）：
+
+```bash
+cd MinoLink.Desktop
+dotnet run
+```
+
+桌面模式特性：
+- 关闭窗口自动隐藏到系统托盘，双击托盘图标恢复
+- 托盘右键菜单：「显示窗口」「开机自启」「退出」
+- Config 页面可切换开机自启
+
+### 构建安装包
+
+只需一条命令，Installer 会自动 publish Desktop 再生成 MSI：
+
+```bash
+dotnet build MinoLink.Installer -c Release
+# → MinoLink.Installer/output/MinoLink-1.0.0.msi
+```
+
+在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
+
+#### 打包原理
+
+```
+dotnet build MinoLink.Installer
+        │
+        ├─ 1. 编译 Installer.exe（net48 + WixSharp）
+        │
+        ├─ 2. MSBuild Target「PublishDesktop」自动触发
+        │     └─ dotnet publish MinoLink.Desktop -c Release -r win-x64 --self-contained
+        │        → 输出到 MinoLink.Desktop/bin/Release/net8.0-windows10.0.19041/win-x64/publish/
+        │
+        └─ 3. WixSharp Target「MSIAuthoring」执行 Installer.exe
+              ├─ InstallerProjectPaths：从 Desktop.csproj 读取 Version 和 ApplicationIcon
+              ├─ 收集 publish 目录下所有文件 → 打入 MSI
+              ├─ InstallerShellLayout：创建开始菜单 + 桌面快捷方式
+              └─ 生成 MinoLink-{version}.msi
+```
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| `Installer.cs` | Main 入口 | 配置 WixSharp Project，调用 `BuildMsi()` |
+| `InstallerProjectPaths.cs` | 路径解析 | 从仓库结构定位 publish 目录，从 csproj 读取版本号和图标 |
+| `InstallerShellLayout.cs` | 快捷方式 | 定义开始菜单和桌面快捷方式的目标路径 |
+
+安装行为：
+- 安装范围：**当前用户**（perUser），无需管理员权限
+- 安装目录：`%LocalAppData%\Programs\MinoLink`
+- 快捷方式：开始菜单 `MinoLink` + 桌面 `MinoLink`
+- 升级：基于 UpgradeCode 的 MSI 标准升级，安装新版本自动替换旧版本
+- 版本号：从 `MinoLink.Desktop.csproj` 的 `<Version>` 元素自动读取
 
 ### 日志文件
 
@@ -169,6 +228,8 @@ dotnet run
 ## 技术栈
 
 - **.NET 8** / C# 12
+- **WPF + BlazorWebView** — 桌面客户端
+- **WixSharp** — MSI 安装包
 - **System.Threading.Channels** — Agent 事件流
 - **FeishuNetSdk.WebSocket** — 飞书长连接
 - **子进程 JSON 流** — Claude Code CLI 通信

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <LangVersion>latest</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <TargetFramework>net48</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixSharp" Version="1.26.0" />
+    <PackageReference Include="WixSharp.wix.bin" Version="3.10.0" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <WixBinPackage>$(PkgWixSharp_wix_bin)\bin</WixBinPackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Folder Include="output\" />
+  </ItemGroup>
+
+  <!-- 构建前自动 publish Desktop 项目 -->
+  <Target Name="PublishDesktop" BeforeTargets="MSIAuthoring">
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\MinoLink.Desktop\MinoLink.Desktop.csproj&quot; -c Release -r win-x64 --self-contained" />
+  </Target>
+
+</Project>

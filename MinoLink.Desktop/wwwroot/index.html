@@ -7,16 +7,16 @@
     <base href="/" />
     <link rel="stylesheet" href="_content/MinoLink.Web/css/app.css" />
     <script>
+        // 启动前立即应用主题，避免闪烁
         (function() {
             var t = localStorage.getItem('mino-theme');
             if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
         })();
     </script>
-    <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 <body>
-    <Routes @rendermode="InteractiveServer" />
-    <script src="_framework/blazor.web.js"></script>
+    <div id="app">正在加载...</div>
+    <script src="_framework/blazor.webview.js"></script>
     <script>
         window.minoTheme = {
             isDark: function() {

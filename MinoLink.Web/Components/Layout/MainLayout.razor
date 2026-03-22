@@ -1,4 +1,9 @@
 @inherits LayoutComponentBase
+@implements IDisposable
+@using Microsoft.Extensions.DependencyInjection
+@using MinoLink.Core.Interfaces
+@inject IServiceProvider ServiceProvider
+@inject IJSRuntime JS
 
 <div class="layout">
     <nav class="topnav">
@@ -8,14 +13,94 @@
                 <NavLink href="" Match="NavLinkMatch.All">概览</NavLink>
                 <NavLink href="config">配置</NavLink>
                 <NavLink href="sessions">会话管理</NavLink>
+                <NavLink href="guide">使用指南</NavLink>
             </div>
         </div>
         <div class="nav-right">
             <span class="nav-dot"></span>
             <span class="nav-status-text">运行中</span>
+
+            @if (_autoStartService is not null)
+            {
+                <button class="nav-icon-btn @(_autoStart ? "active" : "")"
+                        title="@(_autoStart ? "开机自启：已开启" : "开机自启：已关闭")"
+                        @onclick="ToggleAutoStart">
+                    @if (_autoStart)
+                    {
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.3 4L6 11.3 2.7 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    }
+                    else
+                    {
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l3-3m-3 3L5 4M3 9v3a2 2 0 002 2h6a2 2 0 002-2V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    }
+                    <span>自启</span>
+                </button>
+            }
+
+            <button class="nav-icon-btn" title="切换主题" @onclick="ToggleTheme">
+                @if (_isDark)
+                {
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 1v2m0 10v2m-5-7H1m14 0h-2m-1.05-4.95L10.54 5.46M5.46 10.54l-1.41 1.41m0-7.9l1.41 1.41m5.08 5.08l1.41 1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                }
+                else
+                {
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 9.5A6.5 6.5 0 016.5 2 5.5 5.5 0 1014 9.5z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                }
+            </button>
         </div>
     </nav>
     <main class="main-content">
         @Body
     </main>
 </div>
+
+@code {
+    private IAutoStartService? _autoStartService;
+    private bool _autoStart;
+    private bool _isDark;
+    private Action? _onAutoStartChanged;
+
+    protected override void OnInitialized()
+    {
+        _autoStartService = ServiceProvider.GetService<IAutoStartService>();
+        if (_autoStartService is not null)
+        {
+            _autoStart = _autoStartService.IsAutoStartEnabled();
+
+            // 监听外部变化（托盘菜单切换时联动刷新）
+            _onAutoStartChanged = () => InvokeAsync(() =>
+            {
+                _autoStart = _autoStartService.IsAutoStartEnabled();
+                StateHasChanged();
+            });
+            _autoStartService.Changed += _onAutoStartChanged;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _isDark = await JS.InvokeAsync<bool>("minoTheme.isDark");
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleAutoStart()
+    {
+        _autoStart = !_autoStart;
+        _autoStartService?.SetAutoStart(_autoStart);
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDark = !_isDark;
+        await JS.InvokeVoidAsync("minoTheme.toggle", _isDark);
+    }
+
+    public void Dispose()
+    {
+        if (_autoStartService is not null && _onAutoStartChanged is not null)
+            _autoStartService.Changed -= _onAutoStartChanged;
+    }
+}

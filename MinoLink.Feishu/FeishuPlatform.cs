@@ -46,12 +46,9 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     /// <summary>由 <see cref="FeishuMessageHandler"/> 调用，将飞书消息转发到 Engine。</summary>
     internal async Task OnMessageReceivedAsync(string messageId, string chatId, string senderId, string senderName, string content, bool isGroup)
     {
-        if (_messageHandler is null) return;
-
-        // allow_from 白名单检查
-        if (!_options.IsAllowed(senderId))
+        if (_messageHandler is null)
         {
-            _logger.LogDebug("用户 {SenderId} 不在白名单中，忽略", senderId);
+            _logger.LogWarning("消息处理器未就绪（_messageHandler 为 null），消息被丢弃: sender={SenderId}", senderId);
             return;
         }
 
@@ -67,7 +64,17 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             ReplyContext = new FeishuReplyContext(messageId, chatId, senderId, sessionKey),
         };
 
-        await _messageHandler(this, msg);
+        _logger.LogInformation("准备调用消息处理器: sessionKey={SessionKey}, content={Content}",
+            sessionKey, content.Length > 30 ? content[..30] + "..." : content);
+
+        try
+        {
+            await _messageHandler(this, msg);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "消息处理器执行异常: sessionKey={SessionKey}", sessionKey);
+        }
     }
 
     internal string GetSessionKey(string chatId, string senderId, bool isGroup = false) => isGroup

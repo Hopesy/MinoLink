@@ -1,9 +1,10 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
 
-namespace MinoLink.Services;
+namespace MinoLink.Desktop.Services;
 
 public sealed class ConfigService : IConfigService
 {
@@ -61,6 +62,9 @@ public sealed class ConfigService : IConfigService
         }
 
         json["MinoLink"] = minoLink;
+
+        var dir = Path.GetDirectoryName(_configPath);
+        if (dir is not null) Directory.CreateDirectory(dir);
 
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(_configPath, json.ToJsonString(options));
