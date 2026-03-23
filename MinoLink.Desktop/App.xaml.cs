@@ -2,6 +2,7 @@ using System.Drawing;
 using System.IO;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -21,6 +22,8 @@ namespace MinoLink.Desktop;
 
 public partial class App : System.Windows.Application
 {
+    private static readonly Mutex SingleInstanceMutex = new(false, "Global\\MinoLink_SingleInstance_3F7A2E");
+
     private IHost? _host;
     private WinForms.NotifyIcon? _notifyIcon;
     private bool _isExiting;
@@ -33,6 +36,19 @@ public partial class App : System.Windows.Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 单实例保护：防止多进程同时运行导致托盘残留
+        if (!SingleInstanceMutex.WaitOne(0, false))
+        {
+            System.Windows.MessageBox.Show(
+                "MinoLink 已经在运行中。", "MinoLink",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown(0);
+            return;
+        }
+
+        // 注册进程退出兜底清理（覆盖强杀、系统关机等 OnExit 不触发的场景）
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupSync();
 
         DispatcherUnhandledException += (_, args) =>
         {
@@ -83,7 +99,17 @@ public partial class App : System.Windows.Application
             _host.Dispose();
         }
 
+        SingleInstanceMutex.ReleaseMutex();
+
         base.OnExit(e);
+    }
+
+    /// <summary>同步清理兜底：ProcessExit 不支持 async，尽力释放关键资源。</summary>
+    private void CleanupSync()
+    {
+        try { _notifyIcon?.Dispose(); } catch { /* ignore */ }
+        try { _host?.StopAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        try { _host?.Dispose(); } catch { /* ignore */ }
     }
 
     private IHost BuildHost()

@@ -5,18 +5,16 @@ using MinoLink.Core.Models;
 namespace MinoLink.Core;
 
 /// <summary>
-/// 管理所有活跃会话，线程安全。支持每个 sessionKey 拥有多个会话。
+/// 轻量会话管理器：只记录每个用户的当前工作目录（ProjectKey）。
+/// 多会话列表由 Claude Code 原生的 ~/.claude/projects/ 管理，不在此处维护。
 /// </summary>
 public sealed class SessionManager
 {
-    private readonly ConcurrentDictionary<string, UserSessions> _users = new();
+    private readonly ConcurrentDictionary<string, SessionRecord> _records = new();
     private readonly string _storageFilePath;
     private readonly object _ioLock = new();
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-    };
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public SessionManager(string storageFilePath)
     {
@@ -24,28 +22,21 @@ public sealed class SessionManager
         Load();
     }
 
-    /// <summary>获取当前活跃会话，若不存在则自动创建。</summary>
+    /// <summary>获取当前会话记录，若不存在则自动创建。</summary>
     public SessionRecord GetOrCreate(string sessionKey, string platform, string from, string? fromName = null)
     {
-        var user = _users.GetOrAdd(sessionKey, _ => new UserSessions());
         var created = false;
-        SessionRecord record;
-
-        lock (user)
+        var record = _records.GetOrAdd(sessionKey, _ =>
         {
-            if (user.Sessions.Count == 0)
+            created = true;
+            return new SessionRecord
             {
-                user.Sessions.Add(new SessionRecord
-                {
-                    SessionKey = sessionKey,
-                    Platform = platform,
-                    From = from,
-                    FromName = fromName,
-                });
-                created = true;
-            }
-            record = user.Sessions[user.ActiveIndex];
-        }
+                SessionKey = sessionKey,
+                Platform = platform,
+                From = from,
+                FromName = fromName,
+            };
+        });
 
         if (created)
             Save();
@@ -53,193 +44,129 @@ public sealed class SessionManager
         return record;
     }
 
-    /// <summary>创建新会话并设为活跃。</summary>
-    public SessionRecord CreateNew(string sessionKey, string platform, string from, string? name = null)
-    {
-        var user = _users.GetOrAdd(sessionKey, _ => new UserSessions());
-        SessionRecord record;
-
-        lock (user)
-        {
-            record = new SessionRecord
-            {
-                SessionKey = sessionKey,
-                Platform = platform,
-                From = from,
-                Name = name,
-            };
-            user.Sessions.Add(record);
-            user.ActiveIndex = user.Sessions.Count - 1;
-        }
-
-        Save();
-        return record;
-    }
-
-    /// <summary>获取当前活跃会话。</summary>
+    /// <summary>获取当前活跃会话（不创建）。</summary>
     public SessionRecord? GetActive(string sessionKey)
     {
-        if (!_users.TryGetValue(sessionKey, out var user)) return null;
-        lock (user)
-        {
-            return user.Sessions.Count > 0 ? user.Sessions[user.ActiveIndex] : null;
-        }
-    }
-
-    /// <summary>获取某用户的所有会话和当前活跃索引。</summary>
-    public (IReadOnlyList<SessionRecord> Sessions, int ActiveIndex) GetAllSessions(string sessionKey)
-    {
-        if (!_users.TryGetValue(sessionKey, out var user))
-            return (Array.Empty<SessionRecord>(), 0);
-        lock (user)
-        {
-            return (user.Sessions.ToList(), user.ActiveIndex);
-        }
-    }
-
-    /// <summary>切换活跃会话（1-based index）。</summary>
-    public SessionRecord? SwitchTo(string sessionKey, int oneBasedIndex)
-    {
-        if (!_users.TryGetValue(sessionKey, out var user)) return null;
-        SessionRecord? record = null;
-
-        lock (user)
-        {
-            var idx = oneBasedIndex - 1;
-            if (idx < 0 || idx >= user.Sessions.Count) return null;
-            user.ActiveIndex = idx;
-            record = user.Sessions[idx];
-        }
-
-        Save();
+        _records.TryGetValue(sessionKey, out var record);
         return record;
     }
 
-    /// <summary>删除当前活跃会话，自动切到上一个或下一个。返回被删除的会话。</summary>
-    public SessionRecord? RemoveActive(string sessionKey)
-    {
-        if (!_users.TryGetValue(sessionKey, out var user)) return null;
-        SessionRecord? removed;
-
-        lock (user)
-        {
-            if (user.Sessions.Count == 0) return null;
-            removed = user.Sessions[user.ActiveIndex];
-            user.Sessions.RemoveAt(user.ActiveIndex);
-            if (user.Sessions.Count == 0)
-                user.ActiveIndex = 0;
-            else if (user.ActiveIndex >= user.Sessions.Count)
-                user.ActiveIndex = user.Sessions.Count - 1;
-        }
-
-        Save();
-        return removed;
-    }
-
-    /// <summary>持久化当前会话状态。</summary>
+    /// <summary>持久化当前状态到磁盘。</summary>
     public void Save()
     {
         lock (_ioLock)
         {
-            var directory = Path.GetDirectoryName(_storageFilePath);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
-
-            var snapshot = CreateSnapshot();
-            var json = JsonSerializer.Serialize(snapshot, JsonOptions);
-            File.WriteAllText(_storageFilePath, json);
-        }
-    }
-
-    private PersistedState CreateSnapshot()
-    {
-        var state = new PersistedState();
-
-        foreach (var (sessionKey, user) in _users)
-        {
-            lock (user)
+            try
             {
-                state.Users[sessionKey] = new PersistedUserSessions
-                {
-                    ActiveIndex = user.Sessions.Count == 0
-                        ? 0
-                        : Math.Clamp(user.ActiveIndex, 0, user.Sessions.Count - 1),
-                    Sessions = user.Sessions.Select(CloneForPersistence).ToList(),
-                };
-            }
-        }
+                var dir = Path.GetDirectoryName(_storageFilePath);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
 
-        return state;
+                var data = new StorageModel
+                {
+                    Records = new Dictionary<string, StorageRecord>(
+                        _records.Select(kv => new KeyValuePair<string, StorageRecord>(
+                            kv.Key,
+                            new StorageRecord
+                            {
+                                ProjectKey = kv.Value.ProjectKey,
+                                Platform = kv.Value.Platform,
+                                From = kv.Value.From,
+                                FromName = kv.Value.FromName,
+                                LastActiveAt = kv.Value.LastActiveAt,
+                            })))
+                };
+                File.WriteAllText(_storageFilePath, JsonSerializer.Serialize(data, JsonOptions));
+            }
+            catch { /* 持久化失败不影响运行 */ }
+        }
     }
 
     private void Load()
     {
-        if (!File.Exists(_storageFilePath)) return;
+        if (!File.Exists(_storageFilePath))
+            return;
 
         try
         {
             var json = File.ReadAllText(_storageFilePath);
-            var state = JsonSerializer.Deserialize<PersistedState>(json, JsonOptions);
-            if (state?.Users is null) return;
 
-            foreach (var (sessionKey, persisted) in state.Users)
+            // 尝试新格式
+            var data = JsonSerializer.Deserialize<StorageModel>(json, JsonOptions);
+            if (data?.Records is { Count: > 0 })
             {
-                if (persisted.Sessions.Count == 0) continue;
-
-                var user = new UserSessions
+                foreach (var (key, sr) in data.Records)
                 {
-                    ActiveIndex = Math.Clamp(persisted.ActiveIndex, 0, persisted.Sessions.Count - 1),
+                    _records[key] = new SessionRecord
+                    {
+                        SessionKey = key,
+                        ProjectKey = sr.ProjectKey,
+                        Platform = sr.Platform,
+                        From = sr.From ?? key,
+                        FromName = sr.FromName,
+                        LastActiveAt = sr.LastActiveAt,
+                    };
+                }
+                return;
+            }
+
+            // 兼容旧格式（Users 数组）
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("Users", out var users)) return;
+
+            foreach (var user in users.EnumerateObject())
+            {
+                string? projectKey = null, platform = null, from = null, fromName = null;
+                var lastActive = DateTimeOffset.UtcNow;
+
+                if (user.Value.TryGetProperty("Sessions", out var sessions) &&
+                    sessions.ValueKind == JsonValueKind.Array)
+                {
+                    var arr = sessions.EnumerateArray().ToList();
+                    int activeIndex = 0;
+                    if (user.Value.TryGetProperty("ActiveIndex", out var ai))
+                        activeIndex = Math.Max(0, Math.Min(ai.GetInt32(), arr.Count - 1));
+
+                    if (arr.Count > 0)
+                    {
+                        var s = arr[activeIndex];
+                        if (s.TryGetProperty("ProjectKey", out var pk)) projectKey = pk.GetString();
+                        if (s.TryGetProperty("Platform", out var pl)) platform = pl.GetString();
+                        if (s.TryGetProperty("From", out var fr)) from = fr.GetString();
+                        if (s.TryGetProperty("FromName", out var fn)) fromName = fn.GetString();
+                        if (s.TryGetProperty("LastActiveAt", out var la) &&
+                            DateTimeOffset.TryParse(la.GetString(), out var laDto))
+                            lastActive = laDto;
+                    }
+                }
+
+                _records[user.Name] = new SessionRecord
+                {
+                    SessionKey = user.Name,
+                    ProjectKey = projectKey,
+                    Platform = platform,
+                    From = from ?? user.Name,
+                    FromName = fromName,
+                    LastActiveAt = lastActive,
                 };
-                user.Sessions.AddRange(persisted.Sessions.Select(CloneForRuntime));
-                _users[sessionKey] = user;
             }
         }
-        catch
-        {
-            // 持久化文件损坏时忽略，回退为内存空状态
-        }
+        catch { /* 加载失败则从空状态启动 */ }
     }
 
-    private static SessionRecord CloneForPersistence(SessionRecord record) => new()
-    {
-        SessionKey = record.SessionKey,
-        AgentSessionId = record.AgentSessionId,
-        Name = record.Name,
-        From = record.From,
-        FromName = record.FromName,
-        Platform = record.Platform,
-        CreatedAt = record.CreatedAt,
-        LastActiveAt = record.LastActiveAt,
-        ProjectKey = record.ProjectKey,
-    };
+    // ─── 存储模型 ────────────────────────────────────────────────
 
-    private static SessionRecord CloneForRuntime(SessionRecord record) => new()
+    private sealed class StorageModel
     {
-        SessionKey = record.SessionKey,
-        AgentSessionId = record.AgentSessionId,
-        Name = record.Name,
-        From = record.From,
-        FromName = record.FromName,
-        Platform = record.Platform,
-        CreatedAt = record.CreatedAt,
-        LastActiveAt = record.LastActiveAt,
-        ProjectKey = record.ProjectKey,
-    };
-
-    private sealed class UserSessions
-    {
-        public List<SessionRecord> Sessions { get; } = [];
-        public int ActiveIndex { get; set; }
+        public Dictionary<string, StorageRecord> Records { get; set; } = new();
     }
 
-    private sealed class PersistedState
+    private sealed class StorageRecord
     {
-        public Dictionary<string, PersistedUserSessions> Users { get; init; } = [];
-    }
-
-    private sealed class PersistedUserSessions
-    {
-        public List<SessionRecord> Sessions { get; init; } = [];
-        public int ActiveIndex { get; init; }
+        public string? ProjectKey { get; set; }
+        public string? Platform { get; set; }
+        public string? From { get; set; }
+        public string? FromName { get; set; }
+        public DateTimeOffset LastActiveAt { get; set; }
     }
 }

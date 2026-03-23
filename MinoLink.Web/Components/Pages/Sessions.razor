@@ -3,114 +3,123 @@
 @using MinoLink.Core.Models
 @inject Engine Engine
 @inject SessionManager SessionManager
+@implements IDisposable
 
-<div class="page-header">
+<div class="page-header" style="margin-bottom:24px">
     <h1>会话<span class="hl">管理</span></h1>
-    <p class="subtitle">查看和管理所有 Agent 会话。</p>
-    <span class="deco deco-tag deco-wiggle">&#128172;</span>
+    <p class="subtitle">Claude Code 原生会话，按工作目录分组。</p>
 </div>
 
-<div class="filter-bar">
-    <label>平台筛选：</label>
-    <select @bind="_platformFilter">
-        <option value="">全部</option>
-        @foreach (var p in _platforms)
-        {
-            <option value="@p">@p</option>
-        }
-    </select>
+<div class="sessions-active-bar">
+    @{
+        var _activeSessions = _activeSessionMap.Values.ToList();
+    }
+    @if (_activeSessions.Count > 0)
+    {
+        <div class="active-banner">
+            <span class="active-banner-dot"></span>
+            <span class="active-banner-label">&#39069;&#20139;&#27491;&#22312;&#27963;&#36259;&#30340;&#20250;&#35805;</span>
+            @foreach (var r in _activeSessions)
+            {
+                <span class="active-banner-chip">@(r.FromName ?? r.From) &#8594; @TrimPath(r.ProjectKey ?? "")  </span>
+            }
+        </div>
+    }
+</div>
+<div class="sessions-filter-bar">
+    <button class="btn-small" @onclick="Refresh">↻ 刷新</button>
+    <span class="filter-info">@_projects.Count 个目录 · @_projects.Sum(p => p.Sessions.Count) 个会话</span>
 </div>
 
-@if (FilteredSessions.Count == 0)
+@if (_projects.Count == 0)
 {
     <div class="empty-state">
         <div class="empty-icon">&#128193;</div>
-        <p>暂无会话记录。</p>
+        <p>暂无 Claude Code 会话记录。</p>
     </div>
 }
 else
 {
-    <div class="data-table-wrap">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>用户</th>
-                    <th>平台</th>
-                    <th>会话名称</th>
-                    <th>工作目录</th>
-                    <th>创建时间</th>
-                    <th>最后活跃</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var s in FilteredSessions)
+    <div class="sg-grid">
+        @foreach (var project in _projects)
+        {
+            var activeRecord = _activeSessionMap.GetValueOrDefault(project.WorkDir);
+            var isOpen = _expanded.Contains(project.WorkDir);
+            var dirName = TrimPath(project.WorkDir).Split('/')[^1];
+            var cardCls = "sg-card" + (activeRecord is not null ? " sg-card-live" : "");
+            var arrowCls = "sg-arrow" + (isOpen ? " open" : "");
+            <div class="@cardCls">
+                <div class="sg-header" @onclick="() => ToggleGroup(project.WorkDir)">
+                    <div class="sg-header-main">
+                        <div class="sg-icon">&#128194;</div>
+                        <div class="sg-path-wrap">
+                            <div class="sg-dir">@dirName</div>
+                            <div class="sg-fullpath">@TrimPath(project.WorkDir)</div>
+                        </div>
+                        @if (activeRecord is not null)
+                        {
+                            <span class="sg-live"><span class="sg-live-dot"></span>活跃</span>
+                        }
+                        <span class="@arrowCls">▶</span>
+                    </div>
+                    <div class="sg-meta-row">
+                        <span class="sg-pill">@project.Sessions.Count 个会话</span>
+                        <span class="sg-time">@project.LastActive.ToString("MM-dd HH:mm")</span>
+                    </div>
+                </div>
+                @if (isOpen)
                 {
-                    <tr>
-                        <td>@(s.FromName ?? s.From ?? "-")</td>
-                        <td>@(s.Platform ?? "-")</td>
-                        <td>@(s.Name ?? "-")</td>
-                        <td class="mono">@(s.ProjectKey ?? "-")</td>
-                        <td>@s.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
-                        <td>@s.LastActiveAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
-                        <td>
-                            @if (_confirmDelete == s.SessionKey)
-                            {
-                                <button class="btn-danger btn-small" @onclick="() => ConfirmDelete(s.SessionKey)">确认删除</button>
-                                <button class="btn-small" @onclick="() => _confirmDelete = null">取消</button>
-                            }
-                            else
-                            {
-                                <button class="btn-small" @onclick="() => _confirmDelete = s.SessionKey">删除</button>
-                            }
-                        </td>
-                    </tr>
+                    <div class="sg-body">
+                        @foreach (var s in project.Sessions)
+                        {
+                            var isActive = activeRecord?.AgentSessionId == s.SessionId;
+                            <div class="@("sc" + (isActive ? " sc-active" : ""))">
+                                <div class="sc-row1">
+                                    <span class="sc-id">@s.SessionId[..8]</span>
+                                    <span class="sc-time">@s.LastActive.ToString("MM-dd HH:mm")</span>
+                                    @if (isActive) { <span class="sc-badge">&#9654; 当前</span> }
+                                </div>
+                                <div class="sc-summary">@(string.IsNullOrWhiteSpace(s.Summary) ? "—" : s.Summary)</div>
+                            </div>
+                        }
+                    </div>
                 }
-            </tbody>
-        </table>
+            </div>
+        }
     </div>
 }
 
 @code {
-    private List<SessionRecord> _allSessions = [];
-    private HashSet<string> _platforms = [];
-    private string _platformFilter = "";
-    private string? _confirmDelete;
+    private List<NativeProjectInfo> _projects = [];
+    private Dictionary<string, SessionRecord> _activeSessionMap = [];
+    private HashSet<string> _expanded = [];
 
-    private List<SessionRecord> FilteredSessions =>
-        string.IsNullOrEmpty(_platformFilter)
-            ? _allSessions
-            : _allSessions.Where(s => s.Platform == _platformFilter).ToList();
+    protected override void OnInitialized() => LoadData();
 
-    protected override void OnInitialized()
+    private void LoadData()
     {
-        LoadSessions();
-    }
-
-    private void LoadSessions()
-    {
-        var statuses = Engine.GetActiveStatuses();
-        _allSessions = [];
-        _platforms = [];
-
-        foreach (var status in statuses)
+        _projects = ClaudeNativeSession.GetAllProjects();
+        _activeSessionMap = [];
+        foreach (var status in Engine.GetActiveStatuses())
         {
-            var (sessions, _) = SessionManager.GetAllSessions(status.SessionKey);
-            foreach (var session in sessions)
-            {
-                _allSessions.Add(session);
-                if (session.Platform is not null)
-                    _platforms.Add(session.Platform);
-            }
+            var record = SessionManager.GetActive(status.SessionKey);
+            if (record?.ProjectKey is { } dir)
+                _activeSessionMap[dir] = record;
         }
-
-        _allSessions = _allSessions.OrderByDescending(s => s.LastActiveAt).ToList();
     }
 
-    private void ConfirmDelete(string sessionKey)
+    private void Refresh() { LoadData(); StateHasChanged(); }
+
+    private void ToggleGroup(string workDir)
     {
-        SessionManager.RemoveActive(sessionKey);
-        _confirmDelete = null;
-        LoadSessions();
+        if (!_expanded.Add(workDir)) _expanded.Remove(workDir);
     }
+
+    private static string TrimPath(string path)
+    {
+        var parts = path.Replace("\\", "/").TrimEnd('/').Split('/');
+        return parts.Length <= 2 ? path : "…/" + string.Join("/", parts[^2..]);
+    }
+
+    public void Dispose() { }
 }

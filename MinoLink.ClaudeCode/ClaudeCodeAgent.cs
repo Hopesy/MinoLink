@@ -61,7 +61,12 @@ public sealed class ClaudeCodeAgent : IAgent
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
-            proc?.WaitForExit(5000);
+            if (proc is not null && !proc.WaitForExit(5000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                _logger.LogWarning("Claude CLI --version 超时 5s，已强制终止");
+                return;
+            }
             _logger.LogInformation("Claude CLI 可用, mode={Mode}", _mode);
         }
         catch (Exception ex)

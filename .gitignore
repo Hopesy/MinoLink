@@ -364,3 +364,9 @@ FodyWeavers.xsd
 
 # Local git worktrees
 .worktrees/
+
+# Claude Code
+.claude/
+
+# Installer output
+MinoLink.Installer/output/
