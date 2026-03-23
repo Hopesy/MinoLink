@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.IO;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -25,6 +26,9 @@ public partial class App : System.Windows.Application
     private bool _isExiting;
     private MenuItem? _autoStartMenuItem;
     private ContextMenu? _trayContextMenu;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -57,7 +61,8 @@ public partial class App : System.Windows.Application
                 }
             };
             MainWindow = mainWindow;
-            mainWindow.Show();
+            // 创建 HWND 但不显示窗口，启动后静默驻留托盘
+            new System.Windows.Interop.WindowInteropHelper(mainWindow).EnsureHandle();
         }
         catch (Exception ex)
         {
@@ -248,6 +253,14 @@ public partial class App : System.Windows.Application
             Shutdown();
         };
         menu.Items.Add(exitItem);
+
+        // 激活前台窗口使 ContextMenu 能正确响应失焦自动关闭
+        if (MainWindow != null)
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(MainWindow).Handle;
+            if (hwnd != IntPtr.Zero)
+                SetForegroundWindow(hwnd);
+        }
 
         menu.IsOpen = true;
     }
