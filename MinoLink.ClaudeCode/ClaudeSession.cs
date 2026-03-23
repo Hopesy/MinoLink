@@ -98,6 +98,7 @@ public sealed class ClaudeSession : IAgentSession
     public async Task SendAsync(string content, IReadOnlyList<string>? images = null, CancellationToken ct = default)
     {
         if (_stdin is null) throw new InvalidOperationException("会话未启动");
+        if (_cts.IsCancellationRequested) throw new InvalidOperationException("会话已关闭");
 
         var msg = new
         {
@@ -619,6 +620,7 @@ public sealed class ClaudeSession : IAgentSession
         if (_stdin is not null)
         {
             try { _stdin.Close(); } catch { /* ignore */ }
+            _stdin = null;
         }
 
         if (_process is { HasExited: false })
