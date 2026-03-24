@@ -1195,8 +1195,7 @@ public sealed class Engine : IAsyncDisposable
         return $"{content}\n\n---\n{status}";
     }
 
-    private static bool ShouldEmitThinking(IPlatform platform) =>
-        !string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase);
+    private static bool ShouldEmitThinking(IPlatform platform) => true;
 
     private static bool ShouldUseStreamingPreview(IPlatform platform) =>
         !string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase);
