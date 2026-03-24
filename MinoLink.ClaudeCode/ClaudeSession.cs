@@ -241,6 +241,8 @@ public sealed class ClaudeSession : IAgentSession
 
                 case "tool_use":
                     var toolName = item.GetProperty("name").GetString() ?? "unknown";
+                    _logger.LogInformation("tool_use 事件: name={ToolName}, input={Input}", toolName,
+                        item.TryGetProperty("input", out var rawInput) ? rawInput.GetRawText()[..Math.Min(300, rawInput.GetRawText().Length)] : "N/A");
                     if (toolName == "AskUserQuestion") continue;
 
                     var inputSummary = SummarizeToolInput(toolName, item);
@@ -327,6 +329,10 @@ public sealed class ClaudeSession : IAgentSession
                 ExtractQuestionSummary(input),
             "Grep" or "Glob" =>
                 input.TryGetProperty("pattern", out var pat) ? pat.GetString() ?? "" : "",
+            "TaskCreate" or "TodoWrite" =>
+                SummarizeTaskCreate(input),
+            "TaskUpdate" =>
+                SummarizeTaskUpdate(input),
             _ => input.GetRawText().Length > 200 ? input.GetRawText()[..200] + "..." : input.GetRawText(),
         };
     }
@@ -449,6 +455,52 @@ public sealed class ClaudeSession : IAgentSession
         }
 
         return labels;
+    }
+
+    private static string SummarizeTaskCreate(JsonElement input)
+    {
+        // TaskCreate: { subject, description }
+        if (input.TryGetProperty("subject", out var subject))
+            return subject.GetString() ?? "";
+
+        // TodoWrite: { todos: [{ id, content, status, priority }] }
+        if (input.TryGetProperty("todos", out var todos) && todos.ValueKind == JsonValueKind.Array)
+        {
+            var items = new List<string>();
+            foreach (var todo in todos.EnumerateArray())
+            {
+                var content = todo.TryGetProperty("content", out var c) ? c.GetString() : null;
+                var status = todo.TryGetProperty("status", out var s) ? s.GetString() : null;
+                var icon = status switch
+                {
+                    "completed" => "✅",
+                    "in_progress" or "in-progress" => "🔄",
+                    _ => "⬜",
+                };
+                if (!string.IsNullOrWhiteSpace(content))
+                    items.Add($"{icon} {content}");
+            }
+            return items.Count > 0 ? string.Join("\n", items) : "";
+        }
+
+        return input.GetRawText().Length > 200 ? input.GetRawText()[..200] + "..." : input.GetRawText();
+    }
+
+    private static string SummarizeTaskUpdate(JsonElement input)
+    {
+        var taskId = input.TryGetProperty("taskId", out var id) ? id.GetString() ?? "" : "";
+        var status = input.TryGetProperty("status", out var st) ? st.GetString() ?? "" : "";
+        var statusIcon = status switch
+        {
+            "completed" => "✅",
+            "in_progress" => "🔄",
+            "pending" => "⏳",
+            _ => "",
+        };
+        var subject = input.TryGetProperty("subject", out var sub) ? sub.GetString() : null;
+        return subject is not null
+            ? $"{statusIcon} #{taskId} → {subject}"
+            : $"{statusIcon} #{taskId} → {status}";
     }
 
     private List<string> BuildArgs()

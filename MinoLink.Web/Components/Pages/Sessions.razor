@@ -18,7 +18,7 @@
     {
         <div class="active-banner">
             <span class="active-banner-dot"></span>
-            <span class="active-banner-label">&#39069;&#20139;&#27491;&#22312;&#27963;&#36259;&#30340;&#20250;&#35805;</span>
+            <span class="active-banner-label">正在活动的会话</span>
             @foreach (var r in _activeSessions)
             {
                 <span class="active-banner-chip">@(r.FromName ?? r.From) &#8594; @TrimPath(r.ProjectKey ?? "")  </span>
@@ -51,7 +51,7 @@ else
             <div class="@cardCls">
                 <div class="sg-header" @onclick="() => ToggleGroup(project.WorkDir)">
                     <div class="sg-header-main">
-                        <div class="sg-icon">&#128194;</div>
+                        <div class="sg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg></div>
                         <div class="sg-path-wrap">
                             <div class="sg-dir">@dirName</div>
                             <div class="sg-fullpath">@TrimPath(project.WorkDir)</div>

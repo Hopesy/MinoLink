@@ -178,6 +178,24 @@ public sealed class Engine : IAsyncDisposable
         var lastPreviewAt = DateTimeOffset.MinValue;
         var updater = ShouldUseStreamingPreview(platform) ? platform as IMessageUpdater : null;
 
+        // 将 textBuffer 中累积的文本发送出去并清空
+        async Task FlushTextAsync()
+        {
+            if (textBuffer.Length == 0) return;
+            var text = textBuffer.ToString();
+            textBuffer.Clear();
+            if (previewHandle is not null && updater is not null)
+            {
+                await updater.UpdateMessageAsync(previewHandle, Truncate(text, 2000), ct);
+                previewHandle = null;
+            }
+            else
+            {
+                foreach (var chunk in SplitMessage(text, 4000))
+                    await platform.ReplyAsync(replyContext, chunk, ct);
+            }
+        }
+
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         idleCts.CancelAfter(TimeSpan.FromHours(2));
 
@@ -192,11 +210,7 @@ public sealed class Engine : IAsyncDisposable
                 switch (evt.Type)
                 {
                     case AgentEventType.Thinking:
-                        if (previewHandle is not null && updater is not null)
-                        {
-                            await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
-                            previewHandle = null;
-                        }
+                        await FlushTextAsync();
                         if (allowThinkingMessages)
                         {
                             var thinkingPreview = Truncate(evt.Content, 300);
@@ -223,14 +237,15 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.ToolUse:
-                        if (previewHandle is not null && updater is not null)
+                        await FlushTextAsync();
+                        var toolMsg = evt.ToolName switch
                         {
-                            await updater.UpdateMessageAsync(previewHandle, Truncate(textBuffer.ToString(), 2000), ct);
-                            previewHandle = null;
-                        }
-                        var toolMsg = $"🔧 `{evt.ToolName}`";
-                        if (!string.IsNullOrEmpty(evt.ToolInput))
-                            toolMsg += $": {Truncate(evt.ToolInput, 200)}";
+                            "TaskCreate" or "TodoWrite" => $"📋 **待办**: {evt.ToolInput}",
+                            "TaskUpdate" => $"📋 **待办更新**: {evt.ToolInput}",
+                            _ => string.IsNullOrEmpty(evt.ToolInput)
+                                ? $"🔧 `{evt.ToolName}`"
+                                : $"🔧 `{evt.ToolName}`: {Truncate(evt.ToolInput, 200)}",
+                        };
                         await platform.ReplyAsync(replyContext, toolMsg, ct);
                         break;
 
@@ -243,18 +258,29 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.Result:
-                        var result = string.IsNullOrEmpty(evt.Content) ? textBuffer.ToString() : evt.Content;
+                        var flushedText = textBuffer.Length > 0;
+                        await FlushTextAsync();
+                        var resultText = evt.Content;
                         if (previewHandle is not null && updater is not null)
                         {
+                            var previewResult = string.IsNullOrWhiteSpace(resultText)
+                                ? "" : resultText;
                             await updater.UpdateMessageAsync(previewHandle,
-                                BuildCompletedStatusMessage(Truncate(result, 4000), success: true), ct);
+                                BuildCompletedStatusMessage(Truncate(previewResult, 4000), success: true), ct);
                             previewHandle = null;
                         }
-                        else if (!string.IsNullOrWhiteSpace(result))
+                        else if (!flushedText && !string.IsNullOrWhiteSpace(resultText))
                         {
-                            var finalText = BuildCompletedStatusMessage(Truncate(result, 4000), success: true);
+                            // textBuffer 没有被 flush 过（没有中间文本），直接发 result 内容
+                            var finalText = BuildCompletedStatusMessage(Truncate(resultText, 4000), success: true);
                             foreach (var chunk in SplitMessage(finalText, 4000))
                                 await platform.ReplyAsync(replyContext, chunk, ct);
+                        }
+                        else
+                        {
+                            // 正文已经通过 FlushTextAsync 发出，只发完成状态
+                            await platform.ReplyAsync(replyContext,
+                                BuildCompletedStatusMessage("", success: true), ct);
                         }
                         return;
 
@@ -788,31 +814,11 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
-    /// <summary>/clear - 清除当前会话对话历史（清空 AgentSessionId，保留工作目录）。</summary>
+    /// <summary>/clear - 清除当前对话上下文（杀进程，保留会话，下次 resume 恢复）。</summary>
     private async Task<bool> CmdClearAsync(IPlatform platform, Message msg)
     {
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
-        if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
-        {
-            await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法清除会话。", _cts.Token);
-            return true;
-        }
-
-        try
-        {
-            await DestroyStateAsync(msg.SessionKey);
-
-            var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
-            session.AgentSessionId = null;
-            _sessions.Save();
-
-            await platform.ReplyAsync(msg.ReplyContext,
-                "🗑️ 已清除对话历史。\n发送任意消息开始全新对话。", _cts.Token);
-        }
-        finally
-        {
-            sessionLock.Release();
-        }
+        await DestroyStateAsync(msg.SessionKey);
+        await platform.ReplyAsync(msg.ReplyContext, "🗑️ 已清除对话上下文。", _cts.Token);
         return true;
     }
 
@@ -1074,7 +1080,7 @@ public sealed class Engine : IAsyncDisposable
 
                    `/new [--project 路径]` - 开始全新会话
                    `/stop` - 中断当前正在运行的回复
-                   `/clear` - 清除当前会话的对话历史
+                   `/clear` - 清除当前对话上下文
                    `/continue` - 继续最近一次 Claude Code 会话
                    `/resume` - 列出当前目录的历史会话
                    `/switch <序号>` - 切换到指定会话

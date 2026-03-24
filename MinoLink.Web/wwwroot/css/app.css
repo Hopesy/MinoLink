@@ -724,11 +724,14 @@ body::before {
 .sg-icon {
     width: 36px; height: 36px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px; flex-shrink: 0;
-    filter: grayscale(1);
-    opacity: 0.55;
+    flex-shrink: 0;
+    background: var(--input-bg);
+    border-radius: 10px;
+    color: var(--text-3);
+    transition: opacity .2s, color .2s;
 }
-.sg-card-live .sg-icon { filter: grayscale(0); opacity: 0.9; }
+.sg-icon svg { width: 18px; height: 18px; }
+.sg-card-live .sg-icon { color: var(--text); }
 .sg-path-wrap { flex: 1; min-width: 0; }
 .sg-dir {
     font-size: 15px; font-weight: 700; color: var(--text);
