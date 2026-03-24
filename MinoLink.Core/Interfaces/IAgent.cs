@@ -31,7 +31,7 @@ public interface IAgentSession : IAsyncDisposable
     string SessionId { get; }
 
     /// <summary>向 Agent 发送用户消息。</summary>
-    Task SendAsync(string content, IReadOnlyList<string>? images = null, CancellationToken ct = default);
+    Task SendAsync(string content, IReadOnlyList<MessageAttachment>? attachments = null, CancellationToken ct = default);
 
     /// <summary>回复权限请求。</summary>
     Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default);

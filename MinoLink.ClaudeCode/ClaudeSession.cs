@@ -20,6 +20,7 @@ public sealed class ClaudeSession : IAgentSession
     private readonly string? _model;
     private readonly string _mode;
     private readonly CancellationTokenSource _cts = new();
+    private readonly IAgentMessageEncoder _messageEncoder;
 
     private Process? _process;
     private StreamWriter? _stdin;
@@ -30,13 +31,14 @@ public sealed class ClaudeSession : IAgentSession
     public string SessionId => _sessionId;
     public ChannelReader<AgentEvent> Events => _eventChannel.Reader;
 
-    public ClaudeSession(string sessionId, string workDir, string? model, string mode, ILogger logger, bool useContinue = false)
+    internal ClaudeSession(string sessionId, string workDir, string? model, string mode, ILogger logger, IAgentMessageEncoder? messageEncoder = null, bool useContinue = false)
     {
         _sessionId = sessionId;
         _workDir = workDir;
         _model = model;
         _mode = mode;
         _logger = logger;
+        _messageEncoder = messageEncoder ?? new ClaudeCodeTextOnlyMessageEncoder();
         _useContinue = useContinue;
     }
 
@@ -95,10 +97,12 @@ public sealed class ClaudeSession : IAgentSession
         }
     }
 
-    public async Task SendAsync(string content, IReadOnlyList<string>? images = null, CancellationToken ct = default)
+    public async Task SendAsync(string content, IReadOnlyList<MessageAttachment>? attachments = null, CancellationToken ct = default)
     {
         if (_stdin is null) throw new InvalidOperationException("会话未启动");
         if (_cts.IsCancellationRequested) throw new InvalidOperationException("会话已关闭");
+
+        content = _messageEncoder.Encode(content, attachments);
 
         var msg = new
         {

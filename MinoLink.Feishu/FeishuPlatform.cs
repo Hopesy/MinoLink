@@ -44,7 +44,7 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     }
 
     /// <summary>由 <see cref="FeishuMessageHandler"/> 调用，将飞书消息转发到 Engine。</summary>
-    internal async Task OnMessageReceivedAsync(string messageId, string chatId, string senderId, string senderName, string content, bool isGroup)
+    internal async Task OnMessageReceivedAsync(string messageId, string chatId, string senderId, string senderName, string content, bool isGroup, IReadOnlyList<MessageAttachment>? attachments = null)
     {
         if (_messageHandler is null)
         {
@@ -60,6 +60,7 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             From = senderId,
             FromName = senderName,
             Content = content,
+            Attachments = attachments ?? [],
             IsGroup = isGroup,
             ReplyContext = new FeishuReplyContext(messageId, chatId, senderId, sessionKey),
         };

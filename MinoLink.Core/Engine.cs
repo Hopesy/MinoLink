@@ -137,7 +137,7 @@ public sealed class Engine : IAsyncDisposable
                 msg.Content.Length > 50 ? msg.Content[..50] + "..." : msg.Content);
             try
             {
-                await state.AgentSession.SendAsync(msg.Content, msg.Images, _cts.Token);
+                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, _cts.Token);
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("管道已关闭") || ex.Message.Contains("会话已关闭") || ex.InnerException is IOException)
             {
@@ -148,7 +148,7 @@ public sealed class Engine : IAsyncDisposable
                 state = newStart.State;
                 if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
                     await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, _cts.Token);
-                await state.AgentSession.SendAsync(msg.Content, msg.Images, _cts.Token);
+                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, _cts.Token);
             }
             _logger.LogInformation("[{Platform}] 消息已发送，开始等待 Agent 事件流...", platform.Name);
 

@@ -26,6 +26,8 @@ public static class FeishuServiceExtensions
             sdkOpts.EnableLogging = true;
         }).AddFeishuWebSocket();
 
+        services.AddHttpClient();
+
         // 注册平台和事件处理器
         services.AddSingleton(options);
         services.AddSingleton<FeishuPlatform>();
