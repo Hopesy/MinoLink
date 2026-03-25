@@ -6,6 +6,7 @@ namespace MinoLink.Core.Models;
 public sealed class SessionRecord
 {
     public required string SessionKey { get; init; }
+    public string AgentType { get; set; } = "claudecode";
     public string? AgentSessionId { get; set; }
     public string? Name { get; set; }
     public string? From { get; init; }

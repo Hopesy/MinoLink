@@ -5,8 +5,8 @@ using MinoLink.Core.Models;
 namespace MinoLink.Core;
 
 /// <summary>
-/// 轻量会话管理器：只记录每个用户的当前工作目录（ProjectKey）。
-/// 多会话列表由 Claude Code 原生的 ~/.claude/projects/ 管理，不在此处维护。
+/// 轻量会话管理器：只记录每个用户的当前工作目录（ProjectKey）与 Agent 类型。
+/// 多会话列表由各 Agent 的原生会话目录管理，不在此处维护。
 /// </summary>
 public sealed class SessionManager
 {
@@ -69,6 +69,7 @@ public sealed class SessionManager
                             kv.Key,
                             new StorageRecord
                             {
+                                AgentType = kv.Value.AgentType,
                                 ProjectKey = kv.Value.ProjectKey,
                                 Platform = kv.Value.Platform,
                                 From = kv.Value.From,
@@ -100,6 +101,7 @@ public sealed class SessionManager
                     _records[key] = new SessionRecord
                     {
                         SessionKey = key,
+                        AgentType = string.IsNullOrWhiteSpace(sr.AgentType) ? "claudecode" : sr.AgentType,
                         ProjectKey = sr.ProjectKey,
                         Platform = sr.Platform,
                         From = sr.From ?? key,
@@ -117,6 +119,7 @@ public sealed class SessionManager
             foreach (var user in users.EnumerateObject())
             {
                 string? projectKey = null, platform = null, from = null, fromName = null;
+                var agentType = "claudecode";
                 var lastActive = DateTimeOffset.UtcNow;
 
                 if (user.Value.TryGetProperty("Sessions", out var sessions) &&
@@ -143,6 +146,7 @@ public sealed class SessionManager
                 _records[user.Name] = new SessionRecord
                 {
                     SessionKey = user.Name,
+                    AgentType = agentType,
                     ProjectKey = projectKey,
                     Platform = platform,
                     From = from ?? user.Name,
@@ -163,6 +167,7 @@ public sealed class SessionManager
 
     private sealed class StorageRecord
     {
+        public string? AgentType { get; set; }
         public string? ProjectKey { get; set; }
         public string? Platform { get; set; }
         public string? From { get; set; }

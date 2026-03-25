@@ -31,6 +31,7 @@
     <ProjectReference Include="..\MinoLink.Core\MinoLink.Core.csproj" />
     <ProjectReference Include="..\MinoLink.Web\MinoLink.Web.csproj" />
     <ProjectReference Include="..\MinoLink.ClaudeCode\MinoLink.ClaudeCode.csproj" />
+    <ProjectReference Include="..\MinoLink.Codex\MinoLink.Codex.csproj" />
     <ProjectReference Include="..\MinoLink.Feishu\MinoLink.Feishu.csproj" />
   </ItemGroup>
 

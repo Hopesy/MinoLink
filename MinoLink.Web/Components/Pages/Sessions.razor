@@ -7,7 +7,7 @@
 
 <div class="page-header" style="margin-bottom:24px">
     <h1>会话<span class="hl">管理</span></h1>
-    <p class="subtitle">Claude Code 原生会话，按工作目录分组。</p>
+    <p class="subtitle">按 Agent 原生会话分组展示，支持 Claude 与 Codex。</p>
 </div>
 
 <div class="sessions-active-bar">
@@ -21,7 +21,7 @@
             <span class="active-banner-label">正在活动的会话</span>
             @foreach (var r in _activeSessions)
             {
-                <span class="active-banner-chip">@(r.FromName ?? r.From) &#8594; @TrimPath(r.ProjectKey ?? "")  </span>
+                <span class="active-banner-chip">@(r.FromName ?? r.From) &#8594; @GetAgentDisplay(r.AgentType) · @TrimPath(r.ProjectKey ?? "")</span>
             }
         </div>
     }
@@ -35,7 +35,7 @@
 {
     <div class="empty-state">
         <div class="empty-icon">&#128193;</div>
-        <p>暂无 Claude Code 会话记录。</p>
+        <p>暂无会话记录。</p>
     </div>
 }
 else
@@ -98,14 +98,22 @@ else
 
     private void LoadData()
     {
-        _projects = ClaudeNativeSession.GetAllProjects();
-        _activeSessionMap = [];
-        foreach (var status in Engine.GetActiveStatuses())
-        {
-            var record = SessionManager.GetActive(status.SessionKey);
-            if (record?.ProjectKey is { } dir)
-                _activeSessionMap[dir] = record;
-        }
+        var allProjects = new List<NativeProjectInfo>();
+        allProjects.AddRange(ClaudeNativeSession.GetAllProjects());
+        allProjects.AddRange(CodexNativeSession.GetAllProjects());
+
+        _projects = allProjects
+            .GroupBy(p => p.WorkDir, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new NativeProjectInfo(g.Key, g.First().EncodedDir, g.SelectMany(x => x.Sessions).OrderByDescending(x => x.LastActive).ToList()))
+            .OrderByDescending(p => p.LastActive)
+            .ToList();
+
+        _activeSessionMap = Engine.GetActiveStatuses()
+            .Select(status => SessionManager.GetActive(status.SessionKey))
+            .Where(record => record?.ProjectKey is not null)
+            .Cast<SessionRecord>()
+            .GroupBy(record => record.ProjectKey!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LastActiveAt).First(), StringComparer.OrdinalIgnoreCase);
     }
 
     private void Refresh() { LoadData(); StateHasChanged(); }
@@ -120,6 +128,12 @@ else
         var parts = path.Replace("\\", "/").TrimEnd('/').Split('/');
         return parts.Length <= 2 ? path : "…/" + string.Join("/", parts[^2..]);
     }
+
+    private static string GetAgentDisplay(string? agentType) => agentType switch
+    {
+        "codex" => "Codex",
+        _ => "Claude",
+    };
 
     public void Dispose() { }
 }

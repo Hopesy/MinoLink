@@ -12,7 +12,7 @@
             <span class="hl">让 Agent</span> 更简单
         </h1>
         <p class="hero-desc">
-            飞书驱动的 Claude Code 远程管理服务。无需本地终端，权限可控，WebSocket 实时交互。
+            飞书驱动的多 Agent 远程管理服务。无需本地终端，权限可控，WebSocket 实时交互。
         </p>
         <div class="hero-actions">
             <a href="config" class="btn-cta">开始配置 &rarr;</a>
@@ -44,8 +44,8 @@
                 <span style="font-weight:700;">@_statuses.Count 个</span>
             </div>
             <div class="float-input" style="display:flex; justify-content:space-between; cursor:default;">
-                <span style="color:var(--text-3);">Agent 类型</span>
-                <span style="font-weight:700;">@_config.Agent.Type</span>
+                <span style="color:var(--text-3);">Agent 分布</span>
+                <span style="font-weight:700;">@_agentSummary</span>
             </div>
             <div class="float-btn" style="cursor:default;">
                 &#9881; 当前模式：@(_config.Agent.Mode ?? "default")
@@ -73,6 +73,7 @@ else
                 <tr>
                     <th>用户</th>
                     <th>平台</th>
+                    <th>Agent</th>
                     <th>工作目录</th>
                     <th>最后活跃</th>
                     <th>状态</th>
@@ -84,6 +85,7 @@ else
                     <tr>
                         <td>@(s.UserName ?? "-")</td>
                         <td>@(s.Platform ?? "-")</td>
+                        <td>@GetAgentDisplay(s.AgentType)</td>
                         <td class="mono">@(s.WorkDir ?? "-")</td>
                         <td>@s.LastActiveAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
                         <td>
@@ -106,10 +108,23 @@ else
 @code {
     private MinoLinkConfig _config = null!;
     private IReadOnlyList<SessionStatus> _statuses = [];
+    private string _agentSummary = "Claude";
 
     protected override void OnInitialized()
     {
         _config = ConfigService.GetConfig();
         _statuses = Engine.GetActiveStatuses();
+        var agentGroups = _statuses
+            .GroupBy(x => GetAgentDisplay(x.AgentType))
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}×{g.Count()}")
+            .ToArray();
+        _agentSummary = agentGroups.Length > 0 ? string.Join(" / ", agentGroups) : GetAgentDisplay(_config.Agent.Type);
     }
+
+    private static string GetAgentDisplay(string? agentType) => agentType switch
+    {
+        "codex" => "Codex",
+        _ => "Claude",
+    };
 }

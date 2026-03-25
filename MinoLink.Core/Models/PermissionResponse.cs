@@ -11,7 +11,7 @@ public sealed class PermissionResponse
     /// <summary>是否对后续同类请求也自动允许。</summary>
     public bool AllowAll { get; init; }
 
-    /// <summary>允许时回传给 Claude 的更新输入。</summary>
+    /// <summary>允许时回传给 Agent 的更新输入。</summary>
     public Dictionary<string, object?>? UpdatedInput { get; init; }
 
     /// <summary>拒绝时回传的说明。</summary>

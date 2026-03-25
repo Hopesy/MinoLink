@@ -12,7 +12,8 @@ namespace MinoLink.Core;
 public sealed class Engine : IAsyncDisposable
 {
     private readonly string _projectName;
-    private readonly IAgent _agent;
+    private readonly Func<string, IAgent> _agentFactory;
+    private readonly Dictionary<string, IAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IPlatform> _platforms;
     private readonly SessionManager _sessions;
     private readonly ILogger<Engine> _logger;
@@ -28,11 +29,11 @@ public sealed class Engine : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
     private int _disposeState;
 
-    public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
+    public Engine(string projectName, Func<string, IAgent> agentFactory, IEnumerable<IPlatform> platforms,
         string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger, IScreenshotService? screenshotService = null)
     {
         _projectName = projectName;
-        _agent = agent;
+        _agentFactory = agentFactory;
         _platforms = platforms.ToList();
         _sessions = sessions;
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
@@ -73,6 +74,9 @@ public sealed class Engine : IAsyncDisposable
             return;
 
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
+        if (TryApplyAgentDirective(session, ref msg))
+            await DestroyStateAsync(msg.SessionKey);
+
         if (session.ProjectKey is null)
         {
             session.ProjectKey = _defaultWorkDir;
@@ -325,7 +329,7 @@ public sealed class Engine : IAsyncDisposable
         else
         {
             await platform.ReplyAsync(replyContext,
-                BuildCompletedStatusMessage("⚠️ Agent 进程已退出，未返回结果。请检查 Claude CLI 日志。", success: false), ct);
+                BuildCompletedStatusMessage("⚠️ Agent 进程已退出，未返回结果。请检查 Agent 日志。", success: false), ct);
         }
     }
 
@@ -784,6 +788,7 @@ public sealed class Engine : IAsyncDisposable
             var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
             if (workDir is not null)
                 session.ProjectKey = workDir;
+            session.AgentType = "claudecode";
             session.AgentSessionId = null; // 清空，下次消息时启动全新会话
             _sessions.Save();
 
@@ -825,8 +830,8 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
-    /// <summary>/continue - 继续当前工作目录最近一次 Claude Code 会话。</summary>
-    /// <summary>/continue - 继续当前工作目录最近一次 Claude Code 会话。</summary>
+    /// <summary>/continue - 继续当前工作目录最近一次 Agent 会话。</summary>
+    /// <summary>/continue - 继续当前工作目录最近一次 Agent 会话。</summary>
     private async Task<bool> CmdContinueAsync(IPlatform platform, Message msg)
     {
         var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
@@ -844,8 +849,13 @@ public sealed class Engine : IAsyncDisposable
             session.AgentSessionId = "__continue__";
             _sessions.Save();
 
+            var agentDisplay = session.AgentType switch
+            {
+                "codex" => "Codex",
+                _ => "Claude",
+            };
             await platform.ReplyAsync(msg.ReplyContext,
-                "🔄 将继续最近一次 Claude Code 会话。\n发送任意消息继续对话。", _cts.Token);
+                $"🔄 将继续最近一次 {agentDisplay} 会话。\n发送任意消息继续对话。", _cts.Token);
         }
         finally
         {
@@ -854,12 +864,12 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
-    /// <summary>/resume - 列出当前工作目录的所有 Claude Code 原生会话。</summary>
+    /// <summary>/resume - 列出当前工作目录的所有原生会话。</summary>
     private async Task<bool> CmdResumeAsync(IPlatform platform, Message msg)
     {
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
         var workDir = session.ProjectKey ?? _defaultWorkDir;
-        var nativeSessions = ClaudeNativeSession.GetSessions(workDir);
+        var nativeSessions = GetNativeSessions(session.AgentType, workDir);
 
         if (nativeSessions.Count == 0)
         {
@@ -887,7 +897,7 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
-    /// <summary>/switch <序号> - 切换到指定的 Claude Code 原生会话。</summary>
+    /// <summary>/switch <序号> - 切换到指定的原生会话。</summary>
     private async Task<bool> CmdSwitchAsync(IPlatform platform, Message msg, string[] args)
     {
         if (args.Length == 0 || !int.TryParse(args[0], out var index) || index < 1)
@@ -898,7 +908,7 @@ public sealed class Engine : IAsyncDisposable
 
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
         var workDir = session.ProjectKey ?? _defaultWorkDir;
-        var nativeSessions = ClaudeNativeSession.GetSessions(workDir);
+        var nativeSessions = GetNativeSessions(session.AgentType, workDir);
 
         if (index > nativeSessions.Count)
         {
@@ -945,13 +955,20 @@ public sealed class Engine : IAsyncDisposable
         }
 
         var sid = GetDisplaySessionId(msg.SessionKey, session);
-        var mode = _agent.Mode;
+        var mode = GetAgent(session).Mode;
         ModeDisplayNames.TryGetValue(mode, out var modeDisplay);
         modeDisplay ??= mode;
         var projectKey = session.ProjectKey ?? _defaultWorkDir;
         var lastActive = session.LastActiveAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 
+        var agentDisplay = session.AgentType switch
+        {
+            "codex" => "Codex",
+            _ => "Claude",
+        };
+
         var text = $"**会话ID**: `{sid}`\n" +
+                   $"**Agent**: {agentDisplay}\n" +
                    $"**工作目录**: `{projectKey}`\n" +
                    $"**权限模式**: {modeDisplay}\n" +
                    $"**最后活跃**: {lastActive}";
@@ -963,10 +980,13 @@ public sealed class Engine : IAsyncDisposable
     /// <summary>/mode [模式] - 查看或切换权限模式。</summary>
     private async Task<bool> CmdModeAsync(IPlatform platform, Message msg, string[] args)
     {
+        var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
+        var agent = GetAgent(session);
+
         // 无参数：显示当前模式
         if (args.Length == 0)
         {
-            var current = _agent.Mode;
+            var current = agent.Mode;
             ModeDisplayNames.TryGetValue(current, out var display);
             display ??= current;
 
@@ -985,7 +1005,6 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        // 有参数：切换模式
         var targetInput = args[0].ToLowerInvariant();
         if (!ModeMap.TryGetValue(targetInput, out var targetMode))
         {
@@ -994,7 +1013,7 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        if (targetMode == _agent.Mode)
+        if (targetMode == agent.Mode)
         {
             ModeDisplayNames.TryGetValue(targetMode, out var d);
             await platform.ReplyAsync(msg.ReplyContext, $"当前已经是 {d ?? targetMode} 模式。", _cts.Token);
@@ -1010,7 +1029,7 @@ public sealed class Engine : IAsyncDisposable
 
         try
         {
-            _agent.SetMode(targetMode);
+            agent.SetMode(targetMode);
             await DestroyStateAsync(msg.SessionKey);
 
             ModeDisplayNames.TryGetValue(targetMode, out var displayName);
@@ -1114,7 +1133,7 @@ public sealed class Engine : IAsyncDisposable
                    `/new [--project 路径]` - 开始全新会话
                    `/stop` - 中断当前正在运行的回复
                    `/clear` - 清除当前对话上下文
-                   `/continue` - 继续最近一次 Claude Code 会话
+                   `/continue` - 继续最近一次会话
                    `/resume` - 列出当前目录的历史会话
                    `/switch <序号>` - 切换到指定会话
                    `/current` - 查看当前会话信息
@@ -1158,12 +1177,12 @@ public sealed class Engine : IAsyncDisposable
         if (session.AgentSessionId == "__continue__")
         {
             // /continue 模式：使用 --continue 恢复最近会话
-            agentSession = await _agent.ContinueSessionAsync(workDir, _cts.Token);
+            agentSession = await GetAgent(session).ContinueSessionAsync(workDir, _cts.Token);
             session.AgentSessionId = agentSession.SessionId; // 拿到真实 session_id
         }
         else
         {
-            agentSession = await _agent.StartSessionAsync(session.AgentSessionId ?? "", workDir, _cts.Token);
+            agentSession = await GetAgent(session).StartSessionAsync(session.AgentSessionId ?? "", workDir, _cts.Token);
             session.AgentSessionId = agentSession.SessionId;
         }
 
@@ -1179,6 +1198,69 @@ public sealed class Engine : IAsyncDisposable
     private string ResolveProjectPath(string rawPath) => Path.IsPathRooted(rawPath)
         ? Path.GetFullPath(rawPath)
         : Path.GetFullPath(Path.Combine(_defaultWorkDir, rawPath));
+
+    private bool TryApplyAgentDirective(SessionRecord session, ref Message msg)
+    {
+        var content = msg.Content.TrimStart();
+        if (!content.StartsWith('#'))
+            return false;
+
+        var firstSpace = content.IndexOf(' ');
+        var directive = (firstSpace >= 0 ? content[..firstSpace] : content).Trim();
+        var remaining = firstSpace >= 0 ? content[(firstSpace + 1)..].TrimStart() : string.Empty;
+
+        var targetAgent = directive.ToLowerInvariant() switch
+        {
+            "#claude" => "claudecode",
+            "#codex" => "codex",
+            _ => null,
+        };
+
+        if (targetAgent is null)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(remaining) && string.IsNullOrWhiteSpace(session.AgentSessionId))
+            remaining = targetAgent == "codex" ? "开始一个新的 Codex 会话。" : "开始一个新的 Claude 会话。";
+
+        var changed = !string.Equals(session.AgentType, targetAgent, StringComparison.OrdinalIgnoreCase);
+        session.AgentType = targetAgent;
+        session.AgentSessionId = null;
+        _sessions.Save();
+
+        msg = new Message
+        {
+            SessionKey = msg.SessionKey,
+            From = msg.From,
+            FromName = msg.FromName,
+            Content = remaining,
+            Attachments = msg.Attachments,
+            ReplyContext = msg.ReplyContext,
+            IsGroup = msg.IsGroup,
+            ReceivedAt = msg.ReceivedAt,
+        };
+
+        return changed;
+    }
+
+    private IAgent GetAgent(SessionRecord session)
+    {
+        var agentType = string.IsNullOrWhiteSpace(session.AgentType) ? "claudecode" : session.AgentType;
+        if (_agents.TryGetValue(agentType, out var existing))
+            return existing;
+
+        var created = _agentFactory(agentType);
+        _agents[agentType] = created;
+        return created;
+    }
+
+    private static List<NativeSessionInfo> GetNativeSessions(string agentType, string workDir)
+    {
+        return agentType switch
+        {
+            "codex" => CodexNativeSession.GetSessions(workDir),
+            _ => ClaudeNativeSession.GetSessions(workDir),
+        };
+    }
 
     private static string GetConnectionNotice(string? sessionId) =>
         string.IsNullOrWhiteSpace(sessionId)
@@ -1254,6 +1336,7 @@ public sealed class Engine : IAsyncDisposable
                 sessionKey,
                 session.FromName ?? session.From,
                 session.Platform,
+                session.AgentType,
                 session.ProjectKey,
                 session.CreatedAt,
                 session.LastActiveAt,
@@ -1284,7 +1367,8 @@ public sealed class Engine : IAsyncDisposable
             foreach (var platform in _platforms)
                 await platform.DisposeAsync();
 
-            await _agent.DisposeAsync();
+            foreach (var agent in _agents.Values)
+                await agent.DisposeAsync();
 
             // 清理所有 sessionLock
             foreach (var (_, semaphore) in _sessionLocks)

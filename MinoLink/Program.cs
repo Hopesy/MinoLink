@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MinoLink.ClaudeCode;
+using MinoLink.Codex;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
@@ -36,14 +37,20 @@ var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
 builder.Services.AddSingleton<IConfigService>(new ConfigService(configPath, config));
 
 // 注册 Agent
-builder.Services.AddSingleton<IAgent>(sp =>
+builder.Services.AddSingleton<Func<string, IAgent>>(sp => agentType =>
 {
-    var logger = sp.GetRequiredService<ILogger<ClaudeCodeAgent>>();
-    return new ClaudeCodeAgent(new AgentOptions
+    var options = new AgentOptions
     {
         Model = config.Agent.Model,
         Mode = config.Agent.Mode ?? "default",
-    }, logger);
+    };
+
+    return agentType.ToLowerInvariant() switch
+    {
+        "claudecode" or "claude" => new ClaudeCodeAgent(options, sp.GetRequiredService<ILogger<ClaudeCodeAgent>>()),
+        "codex" => new CodexAgent(options, sp.GetRequiredService<ILogger<CodexAgent>>()),
+        _ => throw new InvalidOperationException($"未知 Agent: {agentType}"),
+    };
 });
 
 // 注册 SessionManager
@@ -53,11 +60,11 @@ builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
 // 注册 Engine
 builder.Services.AddSingleton<Engine>(sp =>
 {
-    var agent = sp.GetRequiredService<IAgent>();
+    var agentFactory = sp.GetRequiredService<Func<string, IAgent>>();
     var platforms = sp.GetServices<IPlatform>();
     var sessions = sp.GetRequiredService<SessionManager>();
     var logger = sp.GetRequiredService<ILogger<Engine>>();
-    return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessions, logger);
+    return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger);
 });
 
 // 注册飞书平台

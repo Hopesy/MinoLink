@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MinoLink.ClaudeCode;
+using MinoLink.Codex;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
@@ -140,14 +141,20 @@ public partial class App : System.Windows.Application
         builder.Services.AddSingleton<AutoStartHelper>();
         builder.Services.AddSingleton<IAutoStartService>(sp => sp.GetRequiredService<AutoStartHelper>());
 
-        builder.Services.AddSingleton<IAgent>(sp =>
+        builder.Services.AddSingleton<Func<string, IAgent>>(sp => agentType =>
         {
-            var logger = sp.GetRequiredService<ILogger<ClaudeCodeAgent>>();
-            return new ClaudeCodeAgent(new AgentOptions
+            var options = new AgentOptions
             {
                 Model = config.Agent.Model,
                 Mode = config.Agent.Mode ?? "default",
-            }, logger);
+            };
+
+            return agentType.ToLowerInvariant() switch
+            {
+                "claudecode" or "claude" => new ClaudeCodeAgent(options, sp.GetRequiredService<ILogger<ClaudeCodeAgent>>()),
+                "codex" => new CodexAgent(options, sp.GetRequiredService<ILogger<CodexAgent>>()),
+                _ => throw new InvalidOperationException($"未知 Agent: {agentType}"),
+            };
         });
 
         var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
@@ -157,12 +164,12 @@ public partial class App : System.Windows.Application
 
         builder.Services.AddSingleton<Engine>(sp =>
         {
-            var agent = sp.GetRequiredService<IAgent>();
+            var agentFactory = sp.GetRequiredService<Func<string, IAgent>>();
             var platforms = sp.GetServices<IPlatform>();
             var sessions = sp.GetRequiredService<SessionManager>();
             var logger = sp.GetRequiredService<ILogger<Engine>>();
             var screenshotService = sp.GetRequiredService<IScreenshotService>();
-            return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessions, logger, screenshotService);
+            return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger, screenshotService);
         });
 
         if (config.Feishu is { AppId: not null and not "" })

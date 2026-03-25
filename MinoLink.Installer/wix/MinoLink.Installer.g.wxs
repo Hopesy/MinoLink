@@ -576,6 +576,22 @@
               </RegistryKey>
             </Component>
 
+            <Component Id="Component.MinoLink.Codex.dll_3169719672" Guid="a1c4e7f0-3b6d-4a8e-9f2c-5d1e60f9a291" Win64="yes">
+              <File Id="MinoLink.Codex.dll_3169719672" Source="..\MinoLink.Desktop\bin\Release\net8.0-windows10.0.19041\win-x64\publish\MinoLink.Codex.dll" />
+
+              <RegistryKey Root="HKCU" Key="Software\WixSharp\Used">
+                <RegistryValue Value="0" Type="string" KeyPath="yes" />
+              </RegistryKey>
+            </Component>
+
+            <Component Id="Component.MinoLink.Codex.pdb_2897279310" Guid="a1c4e7f0-3b6d-4a8e-9f2c-5d1ebfcfe424" Win64="yes">
+              <File Id="MinoLink.Codex.pdb_2897279310" Source="..\MinoLink.Desktop\bin\Release\net8.0-windows10.0.19041\win-x64\publish\MinoLink.Codex.pdb" />
+
+              <RegistryKey Root="HKCU" Key="Software\WixSharp\Used">
+                <RegistryValue Value="0" Type="string" KeyPath="yes" />
+              </RegistryKey>
+            </Component>
+
             <Component Id="Component.MinoLink.Core.dll_901135072" Guid="a1c4e7f0-3b6d-4a8e-9f2c-5d1e5a6b0a8e" Win64="yes">
               <File Id="MinoLink.Core.dll_901135072" Source="..\MinoLink.Desktop\bin\Release\net8.0-windows10.0.19041\win-x64\publish\MinoLink.Core.dll" />
 
@@ -2821,6 +2837,8 @@
       <ComponentRef Id="Component.Microsoft.Windows.SDK.NET.dll_302179389" />
       <ComponentRef Id="Component.MinoLink.ClaudeCode.dll_3649301402" />
       <ComponentRef Id="Component.MinoLink.ClaudeCode.pdb_4120505234" />
+      <ComponentRef Id="Component.MinoLink.Codex.dll_3169719672" />
+      <ComponentRef Id="Component.MinoLink.Codex.pdb_2897279310" />
       <ComponentRef Id="Component.MinoLink.Core.dll_901135072" />
       <ComponentRef Id="Component.MinoLink.Core.pdb_111140792" />
       <ComponentRef Id="Component.MinoLink.Desktop.deps.json_110962630" />
