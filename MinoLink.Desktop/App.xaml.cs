@@ -153,13 +153,16 @@ public partial class App : System.Windows.Application
         var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
         builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
 
+        builder.Services.AddSingleton<IScreenshotService, ScreenshotService>();
+
         builder.Services.AddSingleton<Engine>(sp =>
         {
             var agent = sp.GetRequiredService<IAgent>();
             var platforms = sp.GetServices<IPlatform>();
             var sessions = sp.GetRequiredService<SessionManager>();
             var logger = sp.GetRequiredService<ILogger<Engine>>();
-            return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessions, logger);
+            var screenshotService = sp.GetRequiredService<IScreenshotService>();
+            return new Engine(config.ProjectName ?? "default", agent, platforms, defaultWorkDir, sessions, logger, screenshotService);
         });
 
         if (config.Feishu is { AppId: not null and not "" })

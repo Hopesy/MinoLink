@@ -16,6 +16,7 @@ public sealed class Engine : IAsyncDisposable
     private readonly List<IPlatform> _platforms;
     private readonly SessionManager _sessions;
     private readonly ILogger<Engine> _logger;
+    private readonly IScreenshotService? _screenshotService;
     private readonly CancellationTokenSource _cts = new();
 
     // 默认工作目录
@@ -28,7 +29,7 @@ public sealed class Engine : IAsyncDisposable
     private int _disposeState;
 
     public Engine(string projectName, IAgent agent, IEnumerable<IPlatform> platforms,
-        string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger)
+        string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger, IScreenshotService? screenshotService = null)
     {
         _projectName = projectName;
         _agent = agent;
@@ -36,6 +37,7 @@ public sealed class Engine : IAsyncDisposable
         _sessions = sessions;
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
         _logger = logger;
+        _screenshotService = screenshotService;
     }
 
     /// <summary>启动所有平台，注册消息回调。</summary>
@@ -740,6 +742,7 @@ public sealed class Engine : IAsyncDisposable
             "current" => await CmdCurrentAsync(platform, msg),
             "mode" => await CmdModeAsync(platform, msg, args),
             "project" => await CmdProjectAsync(platform, msg, args),
+            "snap" => await CmdSnapAsync(platform, msg),
             "help" => await CmdHelpAsync(platform, msg),
             _ => false, // 未知命令，透传给 Agent
         };
@@ -1072,6 +1075,36 @@ public sealed class Engine : IAsyncDisposable
         return true;
     }
 
+    /// <summary>/snap - 截取当前活动窗口并发送到当前会话。</summary>
+    private async Task<bool> CmdSnapAsync(IPlatform platform, Message msg)
+    {
+        if (_screenshotService is null)
+        {
+            await platform.ReplyAsync(msg.ReplyContext, "当前环境未启用截图服务。", _cts.Token);
+            return true;
+        }
+
+        if (platform is not IImageSender imageSender)
+        {
+            await platform.ReplyAsync(msg.ReplyContext, $"当前平台 `{platform.Name}` 不支持发送图片。", _cts.Token);
+            return true;
+        }
+
+        try
+        {
+            var imagePath = await _screenshotService.CaptureActiveWindowAsync(_cts.Token);
+            await imageSender.SendImageAsync(msg.ReplyContext, imagePath, _cts.Token);
+            await platform.ReplyAsync(msg.ReplyContext, $"✅ 截图已发送: `{imagePath}`", _cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "截屏发送失败: sessionKey={SessionKey}", msg.SessionKey);
+            await platform.ReplyAsync(msg.ReplyContext, $"截屏发送失败: {ex.Message}", _cts.Token);
+        }
+
+        return true;
+    }
+
     /// <summary>/help - 显示可用命令。</summary>
     private async Task<bool> CmdHelpAsync(IPlatform platform, Message msg)
     {
@@ -1086,6 +1119,7 @@ public sealed class Engine : IAsyncDisposable
                    `/switch <序号>` - 切换到指定会话
                    `/current` - 查看当前会话信息
                    `/project [路径]` - 查看/切换工作目录
+                   `/snap` - 截取当前活动窗口并发送
                    `/mode [模式]` - 查看/切换权限模式
                    `/help` - 显示此帮助
 

@@ -52,6 +52,22 @@ public interface ITypingIndicator
 }
 
 /// <summary>
+/// 支持发送本地图片。
+/// </summary>
+public interface IImageSender
+{
+    Task SendImageAsync(object replyContext, string filePath, CancellationToken ct);
+}
+
+/// <summary>
+/// 支持截取桌面图片。
+/// </summary>
+public interface IScreenshotService
+{
+    Task<string> CaptureActiveWindowAsync(CancellationToken ct);
+}
+
+/// <summary>
 /// 卡片数据模型（简化版）。
 /// </summary>
 public sealed class Card

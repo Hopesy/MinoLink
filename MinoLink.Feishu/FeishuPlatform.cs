@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FeishuNetSdk;
@@ -15,11 +17,12 @@ namespace MinoLink.Feishu;
 /// 飞书平台适配器。
 /// 通过 FeishuNetSdk WebSocket 长连接接收消息，通过 TenantApi 发送回复。
 /// </summary>
-public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, ITypingIndicator
+public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, ITypingIndicator, IImageSender
 {
     private readonly IFeishuTenantApi _api;
     private readonly FeishuPlatformOptions _options;
     private readonly ILogger<FeishuPlatform> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ConcurrentDictionary<string, string> _userNameCache = new();
 
     /// <summary>Emoji reaction 表情类型，默认 "OnIt"。</summary>
@@ -29,11 +32,12 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 
     public string Name => "feishu";
 
-    public FeishuPlatform(IFeishuTenantApi api, FeishuPlatformOptions options, ILogger<FeishuPlatform> logger)
+    public FeishuPlatform(IFeishuTenantApi api, FeishuPlatformOptions options, ILogger<FeishuPlatform> logger, IHttpClientFactory httpClientFactory)
     {
         _api = api;
         _options = options;
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     public Task StartAsync(Func<IPlatform, Message, Task> messageHandler, CancellationToken ct)
@@ -107,6 +111,27 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 
     public async Task SendAsync(object replyContext, string text, CancellationToken ct) =>
         await ReplyAsync(replyContext, text, ct);
+
+    public async Task SendImageAsync(object replyContext, string filePath, CancellationToken ct)
+    {
+        var ctx = (FeishuReplyContext)replyContext;
+        if (!File.Exists(filePath))
+            throw new FileNotFoundException("图片文件不存在", filePath);
+
+        var imageKey = await UploadImageAsync(filePath, ct);
+        if (string.IsNullOrWhiteSpace(imageKey))
+            throw new InvalidOperationException("上传飞书图片失败，未返回 image_key");
+
+        var dto = new PostImV1MessagesBodyDto
+        {
+            ReceiveId = ctx.ChatId,
+            MsgType = "image",
+            Content = JsonSerializer.Serialize(new { image_key = imageKey }),
+        };
+
+        await _api.PostImV1MessagesAsync("chat_id", dto);
+        _logger.LogInformation("发送飞书图片成功: chatId={ChatId}, path={Path}", ctx.ChatId, filePath);
+    }
 
     public async Task SendCardAsync(object replyContext, Card card, CancellationToken ct)
     {
@@ -232,6 +257,72 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     private sealed class ReactionDisposable(FeishuPlatform platform, string messageId, string? reactionId) : IDisposable
     {
         public void Dispose() => platform.RemoveReaction(messageId, reactionId);
+    }
+
+    private async Task<string?> UploadImageAsync(string filePath, CancellationToken ct)
+    {
+        using var client = _httpClientFactory.CreateClient();
+        using var tokenContent = JsonContent.Create(new
+        {
+            app_id = _options.AppId,
+            app_secret = _options.AppSecret,
+        });
+        var tokenResponse = await client.PostAsync("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", tokenContent, ct);
+        if (!tokenResponse.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("获取飞书 tenant_access_token 失败: status={StatusCode}", (int)tokenResponse.StatusCode);
+            return null;
+        }
+
+        await using var tokenStream = await tokenResponse.Content.ReadAsStreamAsync(ct);
+        using var tokenDoc = await JsonDocument.ParseAsync(tokenStream, cancellationToken: ct);
+        if (!tokenDoc.RootElement.TryGetProperty("tenant_access_token", out var tokenEl))
+            return null;
+
+        var token = tokenEl.GetString();
+        if (string.IsNullOrWhiteSpace(token))
+            return null;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://open.feishu.cn/open-apis/im/v1/images");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent("message"), "image_type");
+
+        await using var fileStream = File.OpenRead(filePath);
+        using var fileContent = new StreamContent(fileStream);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(GetImageMimeType(filePath));
+        form.Add(fileContent, "image", Path.GetFileName(filePath));
+        request.Content = form;
+
+        var response = await client.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("上传飞书图片失败: path={Path}, status={StatusCode}", filePath, (int)response.StatusCode);
+            return null;
+        }
+
+        await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+        using var responseDoc = await JsonDocument.ParseAsync(responseStream, cancellationToken: ct);
+        if (!responseDoc.RootElement.TryGetProperty("data", out var dataEl) ||
+            !dataEl.TryGetProperty("image_key", out var imageKeyEl))
+        {
+            return null;
+        }
+
+        return imageKeyEl.GetString();
+    }
+
+    private static string GetImageMimeType(string filePath)
+    {
+        return Path.GetExtension(filePath).ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            _ => "image/jpeg",
+        };
     }
 
     // ─────────── 消息格式构建 ───────────
