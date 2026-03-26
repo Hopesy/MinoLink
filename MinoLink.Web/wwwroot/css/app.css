@@ -565,16 +565,47 @@ body::before {
     height: 100%;
     padding: 18px;
     background: rgba(255,255,255,0.84);
-    border-radius: 22px;
+    border-radius: 16px;
     box-shadow: 0 12px 32px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.72);
     border: 1px solid rgba(255,255,255,0.74);
     backdrop-filter: blur(20px) saturate(140%);
+    transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.config-panel:hover {
+    border-color: rgba(59,130,246,0.14);
+    box-shadow: 0 16px 36px rgba(15,23,42,0.07), inset 0 1px 0 rgba(255,255,255,0.76);
+}
+
+.agent-panel:focus-within {
+    border-color: rgba(59,130,246,0.32);
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.08), 0 18px 40px rgba(59,130,246,0.12), inset 0 1px 0 rgba(255,255,255,0.8);
+}
+
+.platform-panel:focus-within {
+    border-color: rgba(124,58,237,0.28);
+    box-shadow: 0 0 0 1px rgba(124,58,237,0.08), 0 18px 40px rgba(124,58,237,0.12), inset 0 1px 0 rgba(255,255,255,0.8);
 }
 
 [data-theme="dark"] .config-panel {
     background: rgba(30,30,46,0.8);
     border-color: rgba(255,255,255,0.06);
     box-shadow: 0 14px 36px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+[data-theme="dark"] .config-panel:hover {
+    border-color: rgba(96,165,250,0.14);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+[data-theme="dark"] .agent-panel:focus-within {
+    border-color: rgba(96,165,250,0.3);
+    box-shadow: 0 0 0 1px rgba(96,165,250,0.1), 0 18px 40px rgba(37,99,235,0.16), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+[data-theme="dark"] .platform-panel:focus-within {
+    border-color: rgba(167,139,250,0.28);
+    box-shadow: 0 0 0 1px rgba(167,139,250,0.1), 0 18px 40px rgba(124,58,237,0.16), inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
 .config-panel-header {
@@ -658,7 +689,7 @@ body::before {
 .config-page-minimal .form-group select {
     border: 1px solid rgba(60,60,67,0.12);
     background: rgba(255,255,255,0.92);
-    border-radius: 16px;
+    border-radius: 10px;
     font-size: 15px;
     padding: 11px 14px;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(15,23,42,0.03);
@@ -667,7 +698,7 @@ body::before {
 .config-page-minimal .masked-field {
     min-height: 45px;
     padding: 7px 14px;
-    border-radius: 16px;
+    border-radius: 10px;
 }
 
 .config-page-minimal .masked-field span {
@@ -700,7 +731,7 @@ body::before {
 
 .config-page-minimal .btn-primary {
     padding: 10px 18px;
-    border-radius: 999px;
+    border-radius: 10px;
     background: linear-gradient(180deg, #4f8dfd 0%, #2f6fed 100%);
     color: white;
     font-size: 14px;
@@ -719,7 +750,8 @@ body::before {
 }
 
 .config-page-minimal .btn-small {
-    padding: 6px 14px;
+    padding: 6px 12px;
+    border-radius: 8px;
     background: rgba(0,0,0,0.05);
     border: 1px solid rgba(0,0,0,0.06);
 }
@@ -754,7 +786,7 @@ body::before {
 
     .config-panel {
         padding: 16px;
-        border-radius: 18px;
+        border-radius: 12px;
     }
 
     .config-panel-header {
@@ -781,13 +813,13 @@ body::before {
     .config-page-minimal .form-group input[type="text"],
     .config-page-minimal .form-group select {
         padding: 10px 12px;
-        border-radius: 14px;
+        border-radius: 8px;
     }
 
     .config-page-minimal .masked-field {
         min-height: 42px;
         padding: 6px 12px;
-        border-radius: 14px;
+        border-radius: 8px;
     }
 
     .field-hint {
@@ -834,7 +866,7 @@ body::before {
 
     .config-panel {
         padding: 14px;
-        border-radius: 16px;
+        border-radius: 10px;
     }
 
     .config-panel-header {
@@ -854,11 +886,13 @@ body::before {
     .config-page-minimal .form-group input[type="text"],
     .config-page-minimal .form-group select {
         padding: 10px 12px;
+        border-radius: 8px;
     }
 
     .config-page-minimal .masked-field {
         min-height: 42px;
         padding: 6px 12px;
+        border-radius: 8px;
     }
 
     .config-page-minimal .btn-primary {
