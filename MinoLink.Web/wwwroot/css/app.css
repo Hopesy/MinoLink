@@ -480,6 +480,396 @@ body::before {
 .config-card.accent-purple::before { background: linear-gradient(90deg, var(--purple), #a78bfa); }
 .config-card.accent-blue::before { background: linear-gradient(90deg, var(--blue), #60a5fa); }
 
+/* ─── Config page refresh ────────────────────────────── */
+.config-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.config-page-minimal {
+    width: 100%;
+}
+
+.config-page-header {
+    margin-bottom: 0;
+}
+
+.config-page-header .subtitle {
+    max-width: 560px;
+}
+
+.config-summary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+}
+
+.config-summary-bar .config-summary-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 200px;
+    min-width: 0;
+    padding: 8px 12px;
+    background: var(--white);
+    border: 1px solid transparent;
+    border-radius: var(--r);
+    box-shadow: var(--shadow-sm);
+}
+
+.config-summary-bar .config-summary-item span {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+.config-summary-bar .config-summary-item strong {
+    min-width: 0;
+    font-size: 14px;
+    color: var(--text);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.config-summary-bar .config-summary-item.is-success {
+    border-color: rgba(34,197,94,0.25);
+    background: color-mix(in srgb, var(--green-bg) 55%, var(--white));
+}
+
+.config-summary-bar .config-summary-item.is-warning {
+    border-color: rgba(245,158,11,0.24);
+    background: color-mix(in srgb, var(--amber-bg) 60%, var(--white));
+}
+
+[data-theme="dark"] .config-summary-bar .config-summary-item.is-success {
+    background: rgba(34,197,94,0.08);
+}
+
+[data-theme="dark"] .config-summary-bar .config-summary-item.is-warning {
+    background: rgba(245,158,11,0.08);
+}
+
+.config-panels-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+}
+
+.config-panel {
+    height: 100%;
+    padding: 18px;
+    background: rgba(255,255,255,0.84);
+    border-radius: 22px;
+    box-shadow: 0 12px 32px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.72);
+    border: 1px solid rgba(255,255,255,0.74);
+    backdrop-filter: blur(20px) saturate(140%);
+}
+
+[data-theme="dark"] .config-panel {
+    background: rgba(30,30,46,0.8);
+    border-color: rgba(255,255,255,0.06);
+    box-shadow: 0 14px 36px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.config-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.config-panel-header h2 {
+    font-size: 22px;
+    line-height: 1.12;
+    margin-bottom: 4px;
+    letter-spacing: -0.03em;
+}
+
+.config-panel-header p {
+    color: var(--text-3);
+    font-size: 12px;
+    max-width: 520px;
+    line-height: 1.5;
+}
+
+.config-field-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+}
+
+.config-field {
+    margin-bottom: 0;
+}
+
+.config-field.span-2 {
+    grid-column: span 2;
+}
+
+.field-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-3);
+}
+
+.config-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.config-inline-tip {
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+.masked-field-pro {
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid rgba(60,60,67,0.12);
+    background: rgba(0,0,0,0.018);
+}
+
+[data-theme="dark"] .masked-field-pro {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+}
+
+.masked-field-pro .btn-small {
+    flex-shrink: 0;
+}
+
+.config-page-minimal .form-group label {
+    font-size: 13px;
+    color: var(--text-2);
+    margin-bottom: 6px;
+}
+
+.config-page-minimal .form-group input[type="text"],
+.config-page-minimal .form-group select {
+    border: 1px solid rgba(60,60,67,0.12);
+    background: rgba(255,255,255,0.92);
+    border-radius: 16px;
+    font-size: 15px;
+    padding: 11px 14px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(15,23,42,0.03);
+}
+
+.config-page-minimal .masked-field {
+    min-height: 45px;
+    padding: 7px 14px;
+    border-radius: 16px;
+}
+
+.config-page-minimal .masked-field span {
+    font-size: 15px;
+    line-height: 1.4;
+}
+
+.config-page-minimal .masked-field .btn-small {
+    padding: 5px 12px;
+}
+
+[data-theme="dark"] .config-page-minimal .form-group input[type="text"],
+[data-theme="dark"] .config-page-minimal .form-group select {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.08);
+    box-shadow: none;
+}
+
+.config-page-minimal .form-group input:focus,
+.config-page-minimal .form-group select:focus {
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.10), 0 6px 18px rgba(59,130,246,0.08);
+    border-color: rgba(59,130,246,0.28);
+    background: rgba(255,255,255,0.98);
+}
+
+[data-theme="dark"] .config-page-minimal .form-group input:focus,
+[data-theme="dark"] .config-page-minimal .form-group select:focus {
+    background: rgba(255,255,255,0.06);
+}
+
+.config-page-minimal .btn-primary {
+    padding: 10px 18px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #4f8dfd 0%, #2f6fed 100%);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 8px 20px rgba(59,130,246,0.20), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+
+.config-page-minimal .btn-primary:hover {
+    opacity: 1;
+    filter: brightness(1.02);
+}
+
+[data-theme="dark"] .config-page-minimal .btn-primary {
+    background: linear-gradient(180deg, #5b9bff 0%, #3b82f6 100%);
+    color: white;
+}
+
+.config-page-minimal .btn-small {
+    padding: 6px 14px;
+    background: rgba(0,0,0,0.05);
+    border: 1px solid rgba(0,0,0,0.06);
+}
+
+[data-theme="dark"] .config-page-minimal .btn-small {
+    background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.06);
+}
+
+.config-page-minimal .alert {
+    margin-top: 16px;
+}
+
+@media (max-width: 800px) {
+    .config-page {
+        gap: 10px;
+    }
+
+    .config-panels-grid {
+        gap: 10px;
+    }
+
+    .config-summary-bar {
+        gap: 6px;
+        padding: 6px;
+    }
+
+    .config-summary-bar .config-summary-item {
+        flex: 1 1 180px;
+        padding: 8px 10px;
+    }
+
+    .config-panel {
+        padding: 16px;
+        border-radius: 18px;
+    }
+
+    .config-panel-header {
+        margin-bottom: 12px;
+    }
+
+    .config-panel-header h2 {
+        font-size: 20px;
+        margin-bottom: 3px;
+    }
+
+    .config-panel-header p {
+        font-size: 12px;
+    }
+
+    .config-field-grid {
+        gap: 10px 12px;
+    }
+
+    .config-page-minimal .form-group label {
+        margin-bottom: 5px;
+    }
+
+    .config-page-minimal .form-group input[type="text"],
+    .config-page-minimal .form-group select {
+        padding: 10px 12px;
+        border-radius: 14px;
+    }
+
+    .config-page-minimal .masked-field {
+        min-height: 42px;
+        padding: 6px 12px;
+        border-radius: 14px;
+    }
+
+    .field-hint {
+        margin-top: 4px;
+    }
+
+    .config-actions {
+        gap: 8px;
+    }
+}
+
+@media (max-width: 640px) {
+    .config-panels-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .config-page {
+        gap: 8px;
+    }
+
+    .config-page-header .subtitle {
+        max-width: none;
+    }
+
+    .config-summary-bar {
+        padding: 5px;
+    }
+
+    .config-summary-bar .config-summary-item {
+        flex-basis: 100%;
+        justify-content: space-between;
+        padding: 8px 9px;
+    }
+
+    .config-field-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .config-field.span-2 {
+        grid-column: span 1;
+    }
+
+    .config-panel {
+        padding: 14px;
+        border-radius: 16px;
+    }
+
+    .config-panel-header {
+        margin-bottom: 10px;
+    }
+
+    .config-panel-header h2 {
+        font-size: 19px;
+    }
+
+    .config-panel-header p,
+    .config-inline-tip,
+    .field-hint {
+        font-size: 11px;
+    }
+
+    .config-page-minimal .form-group input[type="text"],
+    .config-page-minimal .form-group select {
+        padding: 10px 12px;
+    }
+
+    .config-page-minimal .masked-field {
+        min-height: 42px;
+        padding: 6px 12px;
+    }
+
+    .config-page-minimal .btn-primary {
+        padding: 9px 16px;
+    }
+
+    .config-page-minimal .btn-small {
+        padding: 5px 10px;
+    }
+}
+
 /* ─── Guide page — doc layout ───────────────────────── */
 .guide-layout {
     display: grid;
@@ -654,8 +1044,37 @@ body::before {
 /* ─── Sessions Page ───────────────────────────────────────────── */
 .sessions-filter-bar {
     display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+    flex-wrap: wrap;
 }
 .sessions-filter-bar .filter-info { font-size: 14px; color: var(--text-3); }
+.sessions-agent-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);
+}
+.sessions-toggle-btn {
+    border: 0;
+    background: transparent;
+    color: var(--text-3);
+    border-radius: var(--r-full);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.sessions-toggle-btn:hover {
+    color: var(--text);
+}
+.sessions-toggle-btn.active {
+    background: var(--white);
+    color: var(--text);
+    box-shadow: var(--shadow-sm);
+}
 
 /* active sessions banner */
 .active-banner {
@@ -741,6 +1160,22 @@ body::before {
 .sg-fullpath {
     font-size: 11.5px; font-family: var(--mono); color: var(--text-3); margin-top: 2px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sg-agent {
+    display: inline-flex; align-items: center;
+    border-radius: var(--r-full); padding: 3px 10px;
+    font-size: 12px; font-weight: 600; flex-shrink: 0;
+    border: 1px solid transparent;
+}
+.sg-agent-claude {
+    background: rgba(124,58,237,0.08);
+    color: var(--purple);
+    border-color: rgba(124,58,237,0.18);
+}
+.sg-agent-codex {
+    background: rgba(59,130,246,0.08);
+    color: var(--blue);
+    border-color: rgba(59,130,246,0.18);
 }
 .sg-live {
     display: inline-flex; align-items: center; gap: 5px;

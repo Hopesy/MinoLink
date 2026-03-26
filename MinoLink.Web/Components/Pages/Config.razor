@@ -2,111 +2,160 @@
 @using MinoLink.Core.Interfaces
 @inject IConfigService ConfigService
 
-<div class="page-header">
-    <h1><span class="hl">系统</span>配置</h1>
-    <p class="subtitle">管理 Agent 运行参数与飞书平台凭证。</p>
-    <span class="deco deco-tag deco-float">&#9881;&#65039;</span>
-</div>
-
-<div class="config-grid">
-    <div class="config-card accent-purple">
-        <div class="config-card-header">
-            <span class="icon">&#129302;</span> Agent 配置
-        </div>
-        <div class="form-group">
-            <label>默认 Agent</label>
-            <select @bind="_agentType">
-                <option value="claudecode">Claude</option>
-                <option value="codex">Codex</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>工作目录</label>
-            <input type="text" @bind="_workDir" />
-        </div>
-        <div class="form-group">
-            <label>权限模式</label>
-            <select @bind="_mode">
-                <option value="default">默认（每次操作需确认）</option>
-                <option value="acceptEdits">自动接受编辑</option>
-                <option value="plan">规划模式（只读）</option>
-                <option value="bypassPermissions">自动批准（YOLO）</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>模型</label>
-            <input type="text" @bind="_model" placeholder="例如 claude-sonnet-4-20250514" />
-        </div>
-        <div class="form-actions">
-            <button class="btn-primary" @onclick="SaveAgent">保存 Agent 配置</button>
-        </div>
-        @if (_agentSaved)
-        {
-            <div class="alert alert-success">已保存，下次会话时生效。</div>
-        }
+<div class="config-page config-page-minimal">
+    <div class="page-header config-page-header">
+        <h1>系统<span class="hl">配置</span></h1>
+        <p class="subtitle">集中管理默认 Agent 与飞书接入。</p>
     </div>
 
-    <div class="config-card accent-blue">
-        <div class="config-card-header">
-            <span class="icon">&#128172;</span> 飞书配置
+    <div class="config-summary-bar">
+        <div class="config-summary-item">
+            <span>默认 Agent</span>
+            <strong>@GetAgentDisplay(_agentType)</strong>
         </div>
-        <div class="form-group">
-            <label>App ID</label>
-            <input type="text" @bind="_appId" />
+        <div class="config-summary-item">
+            <span>权限模式</span>
+            <strong>@GetModeDisplay(_mode)</strong>
         </div>
-        <div class="form-group">
-            <label>App Secret</label>
-            @if (_editSecret)
-            {
-                <input type="text" @bind="_appSecret" />
-            }
-            else
-            {
-                <div class="masked-field">
-                    <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
-                    <button class="btn-small" @onclick="() => _editSecret = true">编辑</button>
+        <div class="@(IsFeishuConfigured ? "config-summary-item is-success" : "config-summary-item is-warning")">
+            <span>飞书状态</span>
+            <strong>@(IsFeishuConfigured ? "已接入" : "待补全")</strong>
+        </div>
+    </div>
+
+    <div class="config-panels-grid">
+        <section class="config-panel agent-panel">
+            <div class="config-panel-header">
+                <div>
+                    <h2>Agent 设置</h2>
+                    <p>设置新会话默认使用的 Agent、权限模式和运行参数。</p>
                 </div>
-            }
-        </div>
-        <div class="form-group">
-            <label>Verification Token</label>
-            @if (_editToken)
-            {
-                <input type="text" @bind="_verificationToken" />
-            }
-            else
-            {
-                <div class="masked-field">
-                    <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
-                    <button class="btn-small" @onclick="() => _editToken = true">编辑</button>
+            </div>
+
+            <div class="config-field-grid">
+                <div class="form-group config-field">
+                    <label>默认 Agent</label>
+                    <select @bind="_agentType">
+                        <option value="claudecode">Claude</option>
+                        <option value="codex">Codex</option>
+                    </select>
+                    <div class="field-hint">新会话默认使用的 Agent。</div>
                 </div>
+
+                <div class="form-group config-field">
+                    <label>权限模式</label>
+                    <select @bind="_mode">
+                        <option value="default">默认（每次操作需确认）</option>
+                        <option value="acceptEdits">自动接受编辑</option>
+                        <option value="plan">规划模式（只读）</option>
+                        <option value="bypassPermissions">自动批准（YOLO）</option>
+                    </select>
+                    <div class="field-hint">决定执行命令和编辑文件时的确认策略。</div>
+                </div>
+
+                <div class="form-group config-field span-2">
+                    <label>工作目录</label>
+                    <input type="text" @bind="_workDir" placeholder="例如 C:/Users/zhouh/Desktop/MinoLink" />
+                    <div class="field-hint">建议填写项目根目录，作为新会话默认目录。</div>
+                </div>
+
+                <div class="form-group config-field span-2">
+                    <label>模型</label>
+                    <input type="text" @bind="_model" placeholder="留空则使用 CLI 默认模型，例如 claude-sonnet-4-20250514" />
+                    <div class="field-hint">仅在需要锁定模型时填写。</div>
+                </div>
+            </div>
+
+            <div class="form-actions config-actions">
+                <button class="btn-primary" @onclick="SaveAgent">保存 Agent 配置</button>
+                <span class="config-inline-tip">保存后对新会话生效。</span>
+            </div>
+
+            @if (_agentSaved)
+            {
+                <div class="alert alert-success">已保存，下次会话时生效。</div>
             }
-        </div>
-        <div class="form-actions">
-            <button class="btn-primary" @onclick="SaveFeishu">保存飞书配置</button>
-        </div>
-        @if (_feishuSaved)
-        {
-            <div class="alert alert-warning">已保存，需要重启服务后生效。</div>
-        }
+        </section>
+
+        <section class="config-panel platform-panel">
+            <div class="config-panel-header">
+                <div>
+                    <h2>飞书接入</h2>
+                    <p>填写飞书应用接入所需的关键凭证。</p>
+                </div>
+            </div>
+
+            <div class="config-field-grid">
+                <div class="form-group config-field span-2">
+                    <label>App ID</label>
+                    <input type="text" @bind="_appId" placeholder="输入飞书应用 App ID" />
+                    <div class="field-hint">用于标识当前飞书应用。</div>
+                </div>
+
+                <div class="form-group config-field span-2">
+                    <label>App Secret</label>
+                    @if (_editSecret)
+                    {
+                        <input type="text" @bind="_appSecret" placeholder="输入飞书应用 App Secret" />
+                    }
+                    else
+                    {
+                        <div class="masked-field masked-field-pro">
+                            <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+                            <button class="btn-small" @onclick="() => _editSecret = true">编辑</button>
+                        </div>
+                    }
+                    <div class="field-hint">默认隐藏，点击编辑后才会写回配置。</div>
+                </div>
+
+                <div class="form-group config-field span-2">
+                    <label>Verification Token</label>
+                    @if (_editToken)
+                    {
+                        <input type="text" @bind="_verificationToken" placeholder="输入飞书 Verification Token" />
+                    }
+                    else
+                    {
+                        <div class="masked-field masked-field-pro">
+                            <span>&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+                            <button class="btn-small" @onclick="() => _editToken = true">编辑</button>
+                        </div>
+                    }
+                    <div class="field-hint">用于校验飞书回调请求来源。</div>
+                </div>
+            </div>
+
+            <div class="form-actions config-actions">
+                <button class="btn-primary" @onclick="SaveFeishu">保存飞书配置</button>
+                <span class="config-inline-tip">修改密钥后建议重启服务。</span>
+            </div>
+
+            @if (_feishuSaved)
+            {
+                <div class="alert alert-warning">已保存，需要重启服务后生效。</div>
+            }
+        </section>
     </div>
 </div>
 
 @code {
-    // Agent
     private string _agentType = "claudecode";
     private string _workDir = "";
     private string _mode = "default";
     private string _model = "";
     private bool _agentSaved;
 
-    // Feishu
     private string _appId = "";
     private string _appSecret = "";
     private string _verificationToken = "";
     private bool _editSecret;
     private bool _editToken;
     private bool _feishuSaved;
+
+    private bool IsFeishuConfigured =>
+        !string.IsNullOrWhiteSpace(_appId) &&
+        !string.IsNullOrWhiteSpace(_appSecret) &&
+        !string.IsNullOrWhiteSpace(_verificationToken);
 
     protected override void OnInitialized()
     {
@@ -146,5 +195,29 @@
             if (_editToken) c.Feishu.VerificationToken = _verificationToken;
         });
         _feishuSaved = true;
+    }
+
+    private static string GetAgentDisplay(string? agentType) => agentType switch
+    {
+        "codex" => "Codex",
+        _ => "Claude",
+    };
+
+    private static string GetModeDisplay(string? mode) => mode switch
+    {
+        "acceptEdits" => "自动接受编辑",
+        "plan" => "规划模式",
+        "bypassPermissions" => "自动批准",
+        _ => "默认确认",
+    };
+
+    private static string GetWorkDirName(string workDir)
+    {
+        var path = workDir.Replace("\\", "/").TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(path))
+            return "未设置";
+
+        var parts = path.Split('/');
+        return parts.Length == 0 ? path : parts[^1];
     }
 }

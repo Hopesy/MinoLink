@@ -1,0 +1,87 @@
+- generic [ref=e2]:
+  - navigation [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: MinoLink
+      - generic [ref=e6]:
+        - link "概览" [ref=e7] [cursor=pointer]:
+          - /url: ""
+        - link "配置" [ref=e8] [cursor=pointer]:
+          - /url: config
+        - link "会话管理" [ref=e9] [cursor=pointer]:
+          - /url: sessions
+        - link "使用指南" [ref=e10] [cursor=pointer]:
+          - /url: guide
+    - generic [ref=e11]:
+      - generic [ref=e13]: 运行中
+      - button "切换主题" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+  - main [ref=e17]:
+    - generic [ref=e83]:
+      - generic [ref=e84]:
+        - heading "系统配置" [level=1] [ref=e85]
+        - paragraph [ref=e86]: 集中管理默认 Agent 与飞书接入。
+      - generic [ref=e87]:
+        - generic [ref=e88]:
+          - generic [ref=e89]: 默认 Agent
+          - strong [ref=e90]: Claude
+        - generic [ref=e91]:
+          - generic [ref=e92]: 权限模式
+          - strong [ref=e93]: 默认确认
+        - generic [ref=e94]:
+          - generic [ref=e95]: 飞书状态
+          - strong [ref=e96]: 已接入
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - generic [ref=e100]:
+            - heading "Agent 设置" [level=2] [ref=e101]
+            - paragraph [ref=e102]: 设置新会话默认使用的 Agent、权限模式和运行参数。
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - generic [ref=e105]: 默认 Agent
+              - combobox [ref=e106] [cursor=pointer]:
+                - option "Claude" [selected]
+                - option "Codex"
+              - generic [ref=e107]: 新会话默认使用的 Agent。
+            - generic [ref=e108]:
+              - generic [ref=e109]: 权限模式
+              - combobox [active] [ref=e110] [cursor=pointer]:
+                - option "默认（每次操作需确认）" [selected]
+                - option "自动接受编辑"
+                - option "规划模式（只读）"
+                - option "自动批准（YOLO）"
+              - generic [ref=e111]: 决定执行命令和编辑文件时的确认策略。
+            - generic [ref=e112]:
+              - generic [ref=e113]: 工作目录
+              - textbox "例如 C:/Users/zhouh/Desktop/MinoLink" [ref=e114]: C:/Users/zhouh/Desktop
+              - generic [ref=e115]: 建议填写项目根目录，作为新会话默认目录。
+            - generic [ref=e116]:
+              - generic [ref=e117]: 模型
+              - textbox "留空则使用 CLI 默认模型，例如 claude-sonnet-4-20250514" [ref=e118]
+              - generic [ref=e119]: 仅在需要锁定模型时填写。
+          - generic [ref=e120]:
+            - button "保存 Agent 配置" [ref=e121] [cursor=pointer]
+            - generic [ref=e122]: 保存后对新会话生效。
+        - generic [ref=e123]:
+          - generic [ref=e125]:
+            - heading "飞书接入" [level=2] [ref=e126]
+            - paragraph [ref=e127]: 填写飞书应用接入所需的关键凭证。
+          - generic [ref=e128]:
+            - generic [ref=e129]:
+              - generic [ref=e130]: App ID
+              - textbox "输入飞书应用 App ID" [ref=e131]: cli_a932467d6e381bd8
+              - generic [ref=e132]: 用于标识当前飞书应用。
+            - generic [ref=e133]:
+              - generic [ref=e134]: App Secret
+              - generic [ref=e135]:
+                - generic [ref=e136]: ••••••••
+                - button "编辑" [ref=e137] [cursor=pointer]
+              - generic [ref=e138]: 默认隐藏，点击编辑后才会写回配置。
+            - generic [ref=e139]:
+              - generic [ref=e140]: Verification Token
+              - generic [ref=e141]:
+                - generic [ref=e142]: ••••••••
+                - button "编辑" [ref=e143] [cursor=pointer]
+              - generic [ref=e144]: 用于校验飞书回调请求来源。
+          - generic [ref=e145]:
+            - button "保存飞书配置" [ref=e146] [cursor=pointer]
+            - generic [ref=e147]: 修改密钥后建议重启服务。

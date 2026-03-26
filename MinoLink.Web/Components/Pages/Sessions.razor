@@ -28,34 +28,40 @@
 </div>
 <div class="sessions-filter-bar">
     <button class="btn-small" @onclick="Refresh">↻ 刷新</button>
-    <span class="filter-info">@_projects.Count 个目录 · @_projects.Sum(p => p.Sessions.Count) 个会话</span>
+    <div class="sessions-agent-toggle">
+        <button class="@(GetToggleClass(null))" @onclick="@(() => SetAgentFilter(null))">全部</button>
+        <button class="@(GetToggleClass("claudecode"))" @onclick="@(() => SetAgentFilter("claudecode"))">Claude</button>
+        <button class="@(GetToggleClass("codex"))" @onclick="@(() => SetAgentFilter("codex"))">Codex</button>
+    </div>
+    <span class="filter-info">@_visibleProjects.Count 个卡片 · @_visibleProjects.Sum(p => p.Sessions.Count) 个会话</span>
 </div>
 
-@if (_projects.Count == 0)
+@if (_visibleProjects.Count == 0)
 {
     <div class="empty-state">
         <div class="empty-icon">&#128193;</div>
-        <p>暂无会话记录。</p>
+        <p>暂无匹配的会话记录。</p>
     </div>
 }
 else
 {
     <div class="sg-grid">
-        @foreach (var project in _projects)
+        @foreach (var project in _visibleProjects)
         {
-            var activeRecord = _activeSessionMap.GetValueOrDefault(project.WorkDir);
-            var isOpen = _expanded.Contains(project.WorkDir);
+            var activeRecord = _activeSessionMap.GetValueOrDefault(project.Key);
+            var isOpen = _expanded.Contains(project.Key);
             var dirName = TrimPath(project.WorkDir).Split('/')[^1];
             var cardCls = "sg-card" + (activeRecord is not null ? " sg-card-live" : "");
             var arrowCls = "sg-arrow" + (isOpen ? " open" : "");
             <div class="@cardCls">
-                <div class="sg-header" @onclick="() => ToggleGroup(project.WorkDir)">
+                <div class="sg-header" @onclick="() => ToggleGroup(project.Key)">
                     <div class="sg-header-main">
                         <div class="sg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg></div>
                         <div class="sg-path-wrap">
                             <div class="sg-dir">@dirName</div>
                             <div class="sg-fullpath">@TrimPath(project.WorkDir)</div>
                         </div>
+                        <span class="@GetAgentBadgeClass(project.AgentType)">@GetAgentDisplay(project.AgentType)</span>
                         @if (activeRecord is not null)
                         {
                             <span class="sg-live"><span class="sg-live-dot"></span>活跃</span>
@@ -90,21 +96,27 @@ else
 }
 
 @code {
-    private List<NativeProjectInfo> _projects = [];
+    private List<SessionProjectGroup> _projects = [];
+    private string? _agentFilter;
     private Dictionary<string, SessionRecord> _activeSessionMap = [];
     private HashSet<string> _expanded = [];
+    private List<SessionProjectGroup> _visibleProjects => string.IsNullOrWhiteSpace(_agentFilter)
+        ? _projects
+        : _projects.Where(x => string.Equals(x.AgentType, _agentFilter, StringComparison.OrdinalIgnoreCase)).ToList();
 
     protected override void OnInitialized() => LoadData();
 
     private void LoadData()
     {
-        var allProjects = new List<NativeProjectInfo>();
-        allProjects.AddRange(ClaudeNativeSession.GetAllProjects());
-        allProjects.AddRange(CodexNativeSession.GetAllProjects());
+        _projects =
+        [
+            .. ClaudeNativeSession.GetAllProjects()
+                .Select(project => new SessionProjectGroup(BuildGroupKey(project.WorkDir, "claudecode"), project.WorkDir, "claudecode", project.Sessions)),
+            .. CodexNativeSession.GetAllProjects()
+                .Select(project => new SessionProjectGroup(BuildGroupKey(project.WorkDir, "codex"), project.WorkDir, "codex", project.Sessions)),
+        ];
 
-        _projects = allProjects
-            .GroupBy(p => p.WorkDir, StringComparer.OrdinalIgnoreCase)
-            .Select(g => new NativeProjectInfo(g.Key, g.First().EncodedDir, g.SelectMany(x => x.Sessions).OrderByDescending(x => x.LastActive).ToList()))
+        _projects = _projects
             .OrderByDescending(p => p.LastActive)
             .ToList();
 
@@ -112,15 +124,28 @@ else
             .Select(status => SessionManager.GetActive(status.SessionKey))
             .Where(record => record?.ProjectKey is not null)
             .Cast<SessionRecord>()
-            .GroupBy(record => record.ProjectKey!, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(record => BuildGroupKey(record.ProjectKey!, record.AgentType), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LastActiveAt).First(), StringComparer.OrdinalIgnoreCase);
     }
 
     private void Refresh() { LoadData(); StateHasChanged(); }
 
-    private void ToggleGroup(string workDir)
+    private void SetAgentFilter(string? agentType)
     {
-        if (!_expanded.Add(workDir)) _expanded.Remove(workDir);
+        _agentFilter = agentType;
+    }
+
+    private void ToggleGroup(string groupKey)
+    {
+        if (!_expanded.Add(groupKey)) _expanded.Remove(groupKey);
+    }
+
+    private static string BuildGroupKey(string workDir, string? agentType)
+    {
+        var normalizedWorkDir = Path.GetFullPath(workDir)
+            .Replace("\\", "/")
+            .TrimEnd('/');
+        return $"{(agentType ?? "claudecode").ToLowerInvariant()}|{normalizedWorkDir}";
     }
 
     private static string TrimPath(string path)
@@ -134,6 +159,28 @@ else
         "codex" => "Codex",
         _ => "Claude",
     };
+
+    private string GetToggleClass(string? agentType)
+    {
+        var isActive = string.Equals(_agentFilter, agentType, StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrWhiteSpace(_agentFilter) && string.IsNullOrWhiteSpace(agentType));
+        return isActive ? "sessions-toggle-btn active" : "sessions-toggle-btn";
+    }
+
+    private static string GetAgentBadgeClass(string? agentType) => agentType switch
+    {
+        "codex" => "sg-agent sg-agent-codex",
+        _ => "sg-agent sg-agent-claude",
+    };
+
+    private sealed record SessionProjectGroup(
+        string Key,
+        string WorkDir,
+        string AgentType,
+        List<NativeSessionInfo> Sessions)
+    {
+        public DateTime LastActive => Sessions.Count > 0 ? Sessions[0].LastActive : DateTime.MinValue;
+    }
 
     public void Dispose() { }
 }
