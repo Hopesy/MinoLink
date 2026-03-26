@@ -92,35 +92,64 @@ public static class ClaudeNativeSession
         {
             using var fs = File.OpenRead(filePath);
             using var sr = new StreamReader(fs);
+            string? customTitle = null;
+            string? firstMessage = null;
+
             while (sr.ReadLine() is { } line)
             {
-                if (!line.Contains("\"type\":\"user\"") && !line.Contains("\"type\": \"user\""))
+                if (string.IsNullOrWhiteSpace(line))
                     continue;
+
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
-                if (!root.TryGetProperty("message", out var msgEl)) continue;
-                if (!msgEl.TryGetProperty("content", out var contentEl)) continue;
+                if (!root.TryGetProperty("type", out var typeEl))
+                    continue;
+
+                var entryType = typeEl.GetString();
+                if (string.IsNullOrWhiteSpace(customTitle) &&
+                    entryType == "custom-title" &&
+                    root.TryGetProperty("customTitle", out var customTitleEl))
+                {
+                    customTitle = NativeSessionSummaryHelper.NormalizeCandidate(customTitleEl.GetString());
+                    continue;
+                }
+
+                if (entryType != "user" || !string.IsNullOrWhiteSpace(firstMessage))
+                    continue;
+
+                if (!root.TryGetProperty("message", out var msgEl) ||
+                    !msgEl.TryGetProperty("content", out var contentEl))
+                    continue;
+
                 if (contentEl.ValueKind == JsonValueKind.String)
                 {
-                    var s = contentEl.GetString()?.Trim() ?? "";
-                    return s.Length <= 80 ? s : s[..80] + "...";
+                    firstMessage = NativeSessionSummaryHelper.NormalizeCandidate(contentEl.GetString());
+                    continue;
                 }
-                if (contentEl.ValueKind == JsonValueKind.Array)
+
+                if (contentEl.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var item in contentEl.EnumerateArray())
                 {
-                    foreach (var item in contentEl.EnumerateArray())
-                    {
-                        if (item.TryGetProperty("type", out var t) && t.GetString() == "text"
-                            && item.TryGetProperty("text", out var txt))
-                        {
-                            var text = txt.GetString()?.Trim() ?? "";
-                            return text.Length <= 80 ? text : text[..80] + "...";
-                        }
-                    }
+                    if (!item.TryGetProperty("type", out var itemTypeEl) || itemTypeEl.GetString() != "text" ||
+                        !item.TryGetProperty("text", out var textEl))
+                        continue;
+
+                    firstMessage = NativeSessionSummaryHelper.NormalizeCandidate(textEl.GetString());
+                    if (!string.IsNullOrWhiteSpace(firstMessage))
+                        break;
                 }
             }
+
+            return !string.IsNullOrWhiteSpace(customTitle)
+                ? customTitle
+                : firstMessage ?? string.Empty;
         }
-        catch { /* ignore */ }
-        return "";
+        catch
+        {
+            return string.Empty;
+        }
     }
 }
 

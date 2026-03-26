@@ -105,8 +105,9 @@ public static class CodexNativeSession
                     payloadTypeEl.GetString() == "user_message" &&
                     payload.TryGetProperty("message", out var messageEl))
                 {
-                    var message = messageEl.GetString()?.Trim() ?? string.Empty;
-                    return message.Length <= 80 ? message : message[..80] + "...";
+                    var summary = NativeSessionSummaryHelper.NormalizeCandidate(messageEl.GetString());
+                    if (!string.IsNullOrWhiteSpace(summary))
+                        return summary;
                 }
 
                 if (typeEl.GetString() == "response_item" &&
@@ -120,9 +121,12 @@ public static class CodexNativeSession
                     {
                         if (!item.TryGetProperty("type", out var itemTypeEl) || itemTypeEl.GetString() != "input_text")
                             continue;
-                        var text = item.TryGetProperty("text", out var textEl) ? textEl.GetString()?.Trim() ?? string.Empty : string.Empty;
-                        if (!string.IsNullOrWhiteSpace(text))
-                            return text.Length <= 80 ? text : text[..80] + "...";
+
+                        var summary = item.TryGetProperty("text", out var textEl)
+                            ? NativeSessionSummaryHelper.NormalizeCandidate(textEl.GetString())
+                            : string.Empty;
+                        if (!string.IsNullOrWhiteSpace(summary))
+                            return summary;
                     }
                 }
             }
