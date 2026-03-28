@@ -8,6 +8,8 @@ public sealed class SessionRecord
     public required string SessionKey { get; init; }
     public string AgentType { get; set; } = "claudecode";
     public string? AgentSessionId { get; set; }
+    public string? PendingStartMode { get; set; }
+    public string? PendingResumeSessionId { get; set; }
     public string? Name { get; set; }
     public string? From { get; init; }
     public string? FromName { get; init; }

@@ -9,6 +9,7 @@ public sealed class CodexAgent : IAgent
 {
     private readonly string? _model;
     private string _mode;
+    private string _sandboxMode;
     private readonly ILogger<CodexAgent> _logger;
 
     public string Name => "codex";
@@ -18,13 +19,14 @@ public sealed class CodexAgent : IAgent
     {
         _model = options.Model;
         _mode = NormalizeMode(options.Mode);
+        _sandboxMode = ResolveSandboxMode(_mode);
         _logger = logger;
         ValidateCliAvailable();
     }
 
     public async Task<IAgentSession> StartSessionAsync(string sessionId, string workDir, CancellationToken ct)
     {
-        var session = new CodexSession(sessionId, workDir, _model, _mode, _logger);
+        var session = new CodexSession(sessionId, workDir, _model, _mode, _sandboxMode, _logger);
         await session.StartAsync(ct);
         return session;
     }
@@ -32,7 +34,8 @@ public sealed class CodexAgent : IAgent
     public async Task<IAgentSession> ContinueSessionAsync(string workDir, CancellationToken ct)
     {
         var latestSessionId = FindLatestSessionId(workDir);
-        var session = new CodexSession(latestSessionId, workDir, _model, _mode, _logger, useContinue: true);
+        _logger.LogInformation("Codex continue: workDir={WorkDir}, latestSessionId={SessionId}", workDir, latestSessionId ?? "<none>");
+        var session = new CodexSession(latestSessionId ?? string.Empty, workDir, _model, _mode, _sandboxMode, _logger, useContinue: true);
         await session.StartAsync(ct);
         return session;
     }
@@ -40,7 +43,8 @@ public sealed class CodexAgent : IAgent
     public void SetMode(string mode)
     {
         _mode = NormalizeMode(mode);
-        _logger.LogInformation("Codex 权限模式已切换: {Mode}", _mode);
+        _sandboxMode = ResolveSandboxMode(_mode);
+        _logger.LogInformation("Codex 权限模式已切换: {Mode}, sandbox={Sandbox}", _mode, _sandboxMode);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -117,5 +121,12 @@ public sealed class CodexAgent : IAgent
         "plan" => "untrusted",
         "bypasspermissions" or "bypass-permissions" or "yolo" or "auto" => "never",
         _ => "on-request",
+    };
+
+    private static string ResolveSandboxMode(string mode) => mode switch
+    {
+        "untrusted" => "read-only",
+        "never" => "danger-full-access",
+        _ => "workspace-write",
     };
 }

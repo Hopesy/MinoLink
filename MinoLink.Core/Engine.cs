@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using MinoLink.Core.Interfaces;
@@ -11,6 +12,20 @@ namespace MinoLink.Core;
 /// </summary>
 public sealed class Engine : IAsyncDisposable
 {
+    private const string ClaudeAgentType = "claudecode";
+    private const string CodexAgentType = "codex";
+
+    private readonly record struct AgentDirectiveResult(bool Recognized, bool AgentChanged)
+    {
+        public static AgentDirectiveResult None => new(false, false);
+    }
+
+    private static class StartModes
+    {
+        public const string Continue = "continue";
+        public const string Resume = "resume";
+    }
+
     private readonly string _projectName;
     private readonly Func<string, IAgent> _agentFactory;
     private readonly Dictionary<string, IAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
@@ -74,7 +89,8 @@ public sealed class Engine : IAsyncDisposable
             return;
 
         var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
-        if (TryApplyAgentDirective(session, ref msg))
+        var directiveResult = TryApplyAgentDirective(session, ref msg);
+        if (directiveResult.AgentChanged)
             await DestroyStateAsync(msg.SessionKey);
 
         if (session.ProjectKey is null)
@@ -98,7 +114,7 @@ public sealed class Engine : IAsyncDisposable
         {
             try
             {
-                await ProcessMessageAsync(platform, msg, session);
+                await ProcessMessageAsync(platform, msg, session, directiveResult.Recognized);
             }
             catch (Exception ex)
             {
@@ -117,14 +133,14 @@ public sealed class Engine : IAsyncDisposable
     }
 
     /// <summary>消息处理核心逻辑。</summary>
-    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session)
+    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session, bool useSelectedAgentForStartup = false)
     {
         var workDirNotice = EnsureSessionWorkDir(session);
         if (!string.IsNullOrWhiteSpace(workDirNotice))
             await platform.ReplyAsync(msg.ReplyContext, workDirNotice, _cts.Token);
 
         _logger.LogInformation("[{Platform}] 创建/获取 Agent 会话: {SessionKey}", platform.Name, msg.SessionKey);
-        var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session);
+        var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session, useSelectedAgentForStartup);
         var state = stateStart.State;
         _logger.LogInformation("[{Platform}] Agent 会话就绪: {SessionId}", platform.Name, state.AgentSession.SessionId);
 
@@ -177,19 +193,43 @@ public sealed class Engine : IAsyncDisposable
     {
         var events = state.AgentSession.Events;
         var textBuffer = new System.Text.StringBuilder();
-        var allowThinkingMessages = ShouldEmitThinking(platform);
+        var thinkingBuffer = new System.Text.StringBuilder();
+        var allowThinkingMessages = ShouldEmitThinking();
 
         // 流式预览句柄
         object? previewHandle = null;
         var lastPreviewAt = DateTimeOffset.MinValue;
         var updater = ShouldUseStreamingPreview(platform) ? platform as IMessageUpdater : null;
 
+        async Task FlushThinkingAsync()
+        {
+            if (thinkingBuffer.Length == 0)
+                return;
+
+            var thinking = thinkingBuffer.ToString().Trim();
+            thinkingBuffer.Clear();
+            if (!allowThinkingMessages || string.IsNullOrWhiteSpace(thinking))
+                return;
+
+            var thinkingPreview = Truncate(thinking, 300);
+            foreach (var chunk in SplitMessage($"💭 {thinkingPreview}", 4000))
+                await platform.ReplyAsync(replyContext, chunk, ct);
+        }
+
         // 将 textBuffer 中累积的文本发送出去并清空
-        async Task FlushTextAsync()
+        async Task FlushTextAsync(bool normalizeFinalSummary = false)
         {
             if (textBuffer.Length == 0) return;
             var text = textBuffer.ToString();
             textBuffer.Clear();
+            var originalText = text;
+            if (normalizeFinalSummary && string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("[feishu] Result 原始文本\n<<<RESULT_RAW\n{Text}\nRESULT_RAW>>>", originalText);
+                text = NormalizeFinalReplyForFeishu(text);
+                _logger.LogInformation("[feishu] Normalize 后文本\n<<<RESULT_NORMALIZED\n{Text}\nRESULT_NORMALIZED>>>", text);
+            }
+
             if (previewHandle is not null && updater is not null)
             {
                 await updater.UpdateMessageAsync(previewHandle, Truncate(text, 2000), ct);
@@ -216,16 +256,14 @@ public sealed class Engine : IAsyncDisposable
                 switch (evt.Type)
                 {
                     case AgentEventType.Thinking:
-                        await FlushTextAsync();
-                        if (allowThinkingMessages)
-                        {
-                            var thinkingPreview = Truncate(evt.Content, 300);
-                            await platform.ReplyAsync(replyContext, $"💭 {thinkingPreview}", ct);
-                        }
+                        thinkingBuffer.Append(evt.Content);
+                        if (ShouldFlushThinking(thinkingBuffer, evt.Content))
+                            await FlushThinkingAsync();
                         break;
 
                     case AgentEventType.Text:
-                        textBuffer.Append(evt.Content);
+                        await FlushThinkingAsync();
+                        AppendMarkdownChunk(textBuffer, evt.Content);
                         // 流式预览：节流更新
                         if (updater is not null && (DateTimeOffset.UtcNow - lastPreviewAt).TotalMilliseconds > 1500)
                         {
@@ -243,6 +281,7 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.ToolUse:
+                        await FlushThinkingAsync();
                         await FlushTextAsync();
                         var toolMsg = evt.ToolName switch
                         {
@@ -256,16 +295,21 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.PermissionRequest:
+                        await FlushThinkingAsync();
+                        await FlushTextAsync();
                         await HandlePermissionRequestAsync(platform, replyContext, state, evt, ct);
                         break;
 
                     case AgentEventType.UserQuestion:
+                        await FlushThinkingAsync();
+                        await FlushTextAsync();
                         await HandleUserQuestionAsync(platform, replyContext, state, evt, ct);
                         break;
 
                     case AgentEventType.Result:
+                        await FlushThinkingAsync();
                         var flushedText = textBuffer.Length > 0;
-                        await FlushTextAsync();
+                        await FlushTextAsync(normalizeFinalSummary: true);
                         var resultText = evt.Content;
                         if (previewHandle is not null && updater is not null)
                         {
@@ -291,6 +335,7 @@ public sealed class Engine : IAsyncDisposable
                         return;
 
                     case AgentEventType.Error:
+                        await FlushThinkingAsync();
                         var errorText = string.IsNullOrWhiteSpace(evt.Content)
                             ? Truncate(textBuffer.ToString(), 2000)
                             : $"❌ {evt.Content}";
@@ -316,6 +361,7 @@ public sealed class Engine : IAsyncDisposable
 
         _logger.LogWarning("Agent 事件流已结束（未收到 Result 事件）");
         var pendingText = textBuffer.ToString();
+        await FlushThinkingAsync();
         if (previewHandle is not null && updater is not null && !string.IsNullOrWhiteSpace(pendingText))
         {
             await updater.UpdateMessageAsync(previewHandle,
@@ -592,10 +638,42 @@ public sealed class Engine : IAsyncDisposable
     {
         var updated = new Dictionary<string, object?>(originalInput);
         var answerMap = new Dictionary<string, object?>();
-        foreach (var (index, answer) in answers.OrderBy(entry => entry.Key))
-            answerMap[index.ToString()] = answer;
+
+        if (TryGetQuestionIds(originalInput, out var questionIds))
+        {
+            foreach (var (index, answer) in answers.OrderBy(entry => entry.Key))
+            {
+                var key = questionIds.TryGetValue(index, out var questionId)
+                    ? questionId
+                    : index.ToString();
+                answerMap[key] = answer;
+            }
+        }
+        else
+        {
+            foreach (var (index, answer) in answers.OrderBy(entry => entry.Key))
+                answerMap[index.ToString()] = answer;
+        }
+
         updated["answers"] = answerMap;
         return updated;
+    }
+
+    private static bool TryGetQuestionIds(Dictionary<string, object?> originalInput, out Dictionary<int, string> questionIds)
+    {
+        questionIds = new Dictionary<int, string>();
+        if (!originalInput.TryGetValue("questions", out var questionsObj) || questionsObj is not JsonElement questionsEl || questionsEl.ValueKind != JsonValueKind.Array)
+            return false;
+
+        var index = 0;
+        foreach (var questionEl in questionsEl.EnumerateArray())
+        {
+            if (questionEl.TryGetProperty("id", out var idEl) && !string.IsNullOrWhiteSpace(idEl.GetString()))
+                questionIds[index] = idEl.GetString()!;
+            index++;
+        }
+
+        return questionIds.Count > 0;
     }
 
     private string? EnsureSessionWorkDir(SessionRecord session)
@@ -788,8 +866,10 @@ public sealed class Engine : IAsyncDisposable
             var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
             if (workDir is not null)
                 session.ProjectKey = workDir;
-            session.AgentType = "claudecode";
-            session.AgentSessionId = null; // 清空，下次消息时启动全新会话
+            session.AgentType = ClaudeAgentType;
+            session.AgentSessionId = null;
+            session.PendingStartMode = null;
+            session.PendingResumeSessionId = null;
             _sessions.Save();
 
             var projectDisplay = (session.ProjectKey ?? _defaultWorkDir) != _defaultWorkDir
@@ -846,14 +926,12 @@ public sealed class Engine : IAsyncDisposable
             await DestroyStateAsync(msg.SessionKey);
 
             var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
-            session.AgentSessionId = "__continue__";
+            session.AgentSessionId = null;
+            session.PendingStartMode = StartModes.Continue;
+            session.PendingResumeSessionId = null;
             _sessions.Save();
 
-            var agentDisplay = session.AgentType switch
-            {
-                "codex" => "Codex",
-                _ => "Claude",
-            };
+            var agentDisplay = GetAgentDisplayName(session.AgentType);
             await platform.ReplyAsync(msg.ReplyContext,
                 $"🔄 将继续最近一次 {agentDisplay} 会话。\n发送任意消息继续对话。", _cts.Token);
         }
@@ -878,9 +956,10 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        var currentId = session.AgentSessionId;
+        var currentId = session.PendingResumeSessionId ?? session.AgentSessionId;
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("**会话列表**");
+        var agentDisplay = GetAgentDisplayName(session.AgentType);
+        sb.AppendLine($"**{agentDisplay} 会话列表**");
         sb.AppendLine();
         for (var i = 0; i < nativeSessions.Count; i++)
         {
@@ -929,13 +1008,16 @@ public sealed class Engine : IAsyncDisposable
             await DestroyStateAsync(msg.SessionKey);
 
             var target = nativeSessions[index - 1];
-            session.AgentSessionId = target.SessionId;
+            session.AgentSessionId = null;
+            session.PendingStartMode = StartModes.Resume;
+            session.PendingResumeSessionId = target.SessionId;
             _sessions.Save();
 
             var lastActive = target.LastActive.ToString("MM-dd HH:mm");
             var summary = string.IsNullOrWhiteSpace(target.Summary) ? "(无摘要)" : target.Summary;
+            var agentDisplay = GetAgentDisplayName(session.AgentType);
             await platform.ReplyAsync(msg.ReplyContext,
-                $"✅ 已切换到会话 **{index}** ({lastActive})\n{summary}\n\n发送任意消息继续对话。", _cts.Token);
+                $"✅ 已切换到 {agentDisplay} 会话 **{index}** ({lastActive})\n{summary}\n\n发送任意消息继续对话。", _cts.Token);
         }
         finally
         {
@@ -956,21 +1038,19 @@ public sealed class Engine : IAsyncDisposable
 
         var sid = GetDisplaySessionId(msg.SessionKey, session);
         var mode = GetAgent(session).Mode;
-        ModeDisplayNames.TryGetValue(mode, out var modeDisplay);
-        modeDisplay ??= mode;
+        var modeLabel = GetModeFieldLabel(session.AgentType);
+        var modeDisplay = GetModeDisplayName(session.AgentType, mode);
         var projectKey = session.ProjectKey ?? _defaultWorkDir;
         var lastActive = session.LastActiveAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 
-        var agentDisplay = session.AgentType switch
-        {
-            "codex" => "Codex",
-            _ => "Claude",
-        };
+        var agentDisplay = GetAgentDisplayName(session.AgentType);
 
+        var sandboxDisplay = GetSandboxDisplayName(session.AgentType, mode);
         var text = $"**会话ID**: `{sid}`\n" +
                    $"**Agent**: {agentDisplay}\n" +
                    $"**工作目录**: `{projectKey}`\n" +
-                   $"**权限模式**: {modeDisplay}\n" +
+                   $"**{modeLabel}**: {modeDisplay}\n" +
+                   (string.IsNullOrWhiteSpace(sandboxDisplay) ? string.Empty : $"**Sandbox**: {sandboxDisplay}\n") +
                    $"**最后活跃**: {lastActive}";
 
         await platform.ReplyAsync(msg.ReplyContext, text, _cts.Token);
@@ -987,17 +1067,13 @@ public sealed class Engine : IAsyncDisposable
         if (args.Length == 0)
         {
             var current = agent.Mode;
-            ModeDisplayNames.TryGetValue(current, out var display);
-            display ??= current;
+            var display = GetModeDisplayName(session.AgentType, current);
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine($"**当前模式**: {display}");
             sb.AppendLine();
             sb.AppendLine("**可用模式**:");
-            sb.AppendLine("  `default` - 默认 (每次操作需确认)");
-            sb.AppendLine("  `acceptedits` - 自动接受编辑");
-            sb.AppendLine("  `plan` - 规划模式 (只读)");
-            sb.AppendLine("  `yolo` - 自动批准所有操作");
+            AppendModeOptions(sb, session.AgentType);
             sb.AppendLine();
             sb.AppendLine("使用 `/mode <模式名>` 切换");
 
@@ -1013,10 +1089,12 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        if (targetMode == agent.Mode)
+        var effectiveCurrentMode = GetEffectiveModeForAgent(session.AgentType, agent.Mode);
+        var effectiveTargetMode = GetEffectiveModeForAgent(session.AgentType, targetMode);
+        if (string.Equals(effectiveTargetMode, effectiveCurrentMode, StringComparison.OrdinalIgnoreCase))
         {
-            ModeDisplayNames.TryGetValue(targetMode, out var d);
-            await platform.ReplyAsync(msg.ReplyContext, $"当前已经是 {d ?? targetMode} 模式。", _cts.Token);
+            var d = GetModeDisplayName(session.AgentType, effectiveCurrentMode);
+            await platform.ReplyAsync(msg.ReplyContext, $"当前已经是 {d} 模式。", _cts.Token);
             return true;
         }
 
@@ -1032,10 +1110,14 @@ public sealed class Engine : IAsyncDisposable
             agent.SetMode(targetMode);
             await DestroyStateAsync(msg.SessionKey);
 
-            ModeDisplayNames.TryGetValue(targetMode, out var displayName);
-            displayName ??= targetMode;
+            var actualMode = agent.Mode;
+            var displayName = GetModeDisplayName(session.AgentType, actualMode);
+            var sandboxDisplay = GetSandboxDisplayName(session.AgentType, actualMode);
             await platform.ReplyAsync(msg.ReplyContext,
-                $"✅ 已切换到 **{displayName}** 模式\n下次发消息时将以 `--resume` 恢复会话。", _cts.Token);
+                string.IsNullOrWhiteSpace(sandboxDisplay)
+                    ? $"✅ 已切换到 **{displayName}** 模式\n下次发消息时将按当前 Agent 设置启动。"
+                    : $"✅ 已切换到 **{displayName}** 模式\nSandbox: `{sandboxDisplay}`\n下次发消息时将按当前 Agent 设置启动。",
+                _cts.Token);
         }
         finally
         {
@@ -1160,7 +1242,7 @@ public sealed class Engine : IAsyncDisposable
 
     // ─── 会话状态管理 ────────────────────────────────────────────
 
-    private async Task<StateStartResult> GetOrCreateStateAsync(string sessionKey, SessionRecord session)
+    private async Task<StateStartResult> GetOrCreateStateAsync(string sessionKey, SessionRecord session, bool useSelectedAgentForStartup = false)
     {
         if (_states.TryGetValue(sessionKey, out var existing) && existing.AgentSession is not null)
         {
@@ -1171,21 +1253,27 @@ public sealed class Engine : IAsyncDisposable
 
         // 工作目录直接取自 session.ProjectKey
         var workDir = session.ProjectKey ?? _defaultWorkDir;
-        var connectionNotice = GetConnectionNotice(session.AgentSessionId);
+        var connectionNotice = GetConnectionNotice(session.PendingStartMode);
+
+        var startupAgentType = ResolveAgentTypeForStartup(session, useSelectedAgentForStartup);
+        session.AgentType = startupAgentType;
 
         IAgentSession agentSession;
-        if (session.AgentSessionId == "__continue__")
+        if (string.Equals(session.PendingStartMode, StartModes.Continue, StringComparison.Ordinal))
         {
-            // /continue 模式：使用 --continue 恢复最近会话
-            agentSession = await GetAgent(session).ContinueSessionAsync(workDir, _cts.Token);
-            session.AgentSessionId = agentSession.SessionId; // 拿到真实 session_id
+            agentSession = await GetAgent(startupAgentType).ContinueSessionAsync(workDir, _cts.Token);
         }
         else
         {
-            agentSession = await GetAgent(session).StartSessionAsync(session.AgentSessionId ?? "", workDir, _cts.Token);
-            session.AgentSessionId = agentSession.SessionId;
+            var resumeSessionId = string.Equals(session.PendingStartMode, StartModes.Resume, StringComparison.Ordinal)
+                ? session.PendingResumeSessionId ?? string.Empty
+                : string.Empty;
+            agentSession = await GetAgent(startupAgentType).StartSessionAsync(resumeSessionId, workDir, _cts.Token);
         }
 
+        session.AgentSessionId = agentSession.SessionId;
+        session.PendingStartMode = null;
+        session.PendingResumeSessionId = null;
         var state = new InteractiveState(agentSession);
         _states[sessionKey] = state;
         _sessions.Save();
@@ -1199,11 +1287,11 @@ public sealed class Engine : IAsyncDisposable
         ? Path.GetFullPath(rawPath)
         : Path.GetFullPath(Path.Combine(_defaultWorkDir, rawPath));
 
-    private bool TryApplyAgentDirective(SessionRecord session, ref Message msg)
+    private AgentDirectiveResult TryApplyAgentDirective(SessionRecord session, ref Message msg)
     {
         var content = msg.Content.TrimStart();
         if (!content.StartsWith('#'))
-            return false;
+            return AgentDirectiveResult.None;
 
         var firstSpace = content.IndexOf(' ');
         var directive = (firstSpace >= 0 ? content[..firstSpace] : content).Trim();
@@ -1211,20 +1299,22 @@ public sealed class Engine : IAsyncDisposable
 
         var targetAgent = directive.ToLowerInvariant() switch
         {
-            "#claude" => "claudecode",
-            "#codex" => "codex",
+            "#claude" => ClaudeAgentType,
+            "#codex" => CodexAgentType,
             _ => null,
         };
 
         if (targetAgent is null)
-            return false;
+            return AgentDirectiveResult.None;
 
         if (string.IsNullOrWhiteSpace(remaining) && string.IsNullOrWhiteSpace(session.AgentSessionId))
-            remaining = targetAgent == "codex" ? "开始一个新的 Codex 会话。" : "开始一个新的 Claude 会话。";
+            remaining = targetAgent == CodexAgentType ? "开始一个新的 Codex 会话。" : "开始一个新的 Claude 会话。";
 
         var changed = !string.Equals(session.AgentType, targetAgent, StringComparison.OrdinalIgnoreCase);
         session.AgentType = targetAgent;
         session.AgentSessionId = null;
+        session.PendingStartMode = null;
+        session.PendingResumeSessionId = null;
         _sessions.Save();
 
         msg = new Message
@@ -1239,12 +1329,12 @@ public sealed class Engine : IAsyncDisposable
             ReceivedAt = msg.ReceivedAt,
         };
 
-        return changed;
+        return new AgentDirectiveResult(true, changed);
     }
 
-    private IAgent GetAgent(SessionRecord session)
+    private IAgent GetAgent(string agentType)
     {
-        var agentType = string.IsNullOrWhiteSpace(session.AgentType) ? "claudecode" : session.AgentType;
+        agentType = NormalizeAgentType(agentType);
         if (_agents.TryGetValue(agentType, out var existing))
             return existing;
 
@@ -1253,30 +1343,147 @@ public sealed class Engine : IAsyncDisposable
         return created;
     }
 
+    private IAgent GetAgent(SessionRecord session) => GetAgent(session.AgentType);
+
     private static List<NativeSessionInfo> GetNativeSessions(string agentType, string workDir)
     {
         return agentType switch
         {
-            "codex" => CodexNativeSession.GetSessions(workDir),
+            CodexAgentType => CodexNativeSession.GetSessions(workDir),
             _ => ClaudeNativeSession.GetSessions(workDir),
         };
     }
 
-    private static string GetConnectionNotice(string? sessionId) =>
-        string.IsNullOrWhiteSpace(sessionId)
-            ? "🎉 客户端已连接"
-            : "🎉 客户端已恢复";
+    private static string GetConnectionNotice(string? pendingStartMode) =>
+        IsRecoveryStartMode(pendingStartMode) ? "🎉 客户端已恢复" : "🎉 客户端已连接";
+
+    private static string NormalizeAgentType(string? agentType) =>
+        string.Equals(agentType, CodexAgentType, StringComparison.OrdinalIgnoreCase)
+            ? CodexAgentType
+            : ClaudeAgentType;
+
+    private static bool IsRecoveryStartMode(string? pendingStartMode) =>
+        string.Equals(pendingStartMode, StartModes.Continue, StringComparison.Ordinal) ||
+        string.Equals(pendingStartMode, StartModes.Resume, StringComparison.Ordinal);
+
+    private static string ResolveAgentTypeForStartup(SessionRecord session, bool useSelectedAgentForStartup)
+    {
+        var selectedAgentType = NormalizeAgentType(session.AgentType);
+        if (IsRecoveryStartMode(session.PendingStartMode))
+            return selectedAgentType;
+
+        return useSelectedAgentForStartup
+            ? selectedAgentType
+            : ClaudeAgentType;
+    }
+
+    private static string GetAgentDisplayName(string? agentType) =>
+        NormalizeAgentType(agentType) == CodexAgentType ? "Codex" : "Claude";
+
+    private static bool IsCodexAgent(string? agentType) =>
+        NormalizeAgentType(agentType) == CodexAgentType;
+
+    private static string GetModeFieldLabel(string? agentType) =>
+        IsCodexAgent(agentType) ? "审批模式" : "权限模式";
+
+    private static string GetModeDisplayName(string? agentType, string mode)
+    {
+        if (TryGetCodexModePresentation(agentType, mode, out var displayName, out _))
+            return displayName;
+
+        ModeDisplayNames.TryGetValue(mode, out var display);
+        return display ?? mode;
+    }
+
+    private static string GetEffectiveModeForAgent(string? agentType, string mode)
+    {
+        if (!IsCodexAgent(agentType))
+            return mode;
+
+        return NormalizeCodexMode(mode);
+    }
+
+    private static void AppendModeOptions(System.Text.StringBuilder sb, string? agentType)
+    {
+        var options = IsCodexAgent(agentType)
+            ? new[]
+            {
+                "  `default` - 映射到 `on-request + workspace-write`",
+                "  `acceptedits` - 当前等价于 `default`，同样映射到 `on-request + workspace-write`",
+                "  `plan` - 映射到 `untrusted + read-only`",
+                "  `yolo` - 映射到 `never + danger-full-access`",
+            }
+            : new[]
+            {
+                "  `default` - 默认 (每次操作需确认)",
+                "  `acceptedits` - 自动接受编辑",
+                "  `plan` - 规划模式 (只读)",
+                "  `yolo` - 自动批准所有操作",
+            };
+
+        foreach (var option in options)
+            sb.AppendLine(option);
+    }
+
+    private static string GetSandboxDisplayName(string? agentType, string mode)
+    {
+        if (TryGetCodexModePresentation(agentType, mode, out _, out var sandboxDisplay))
+            return sandboxDisplay;
+
+        return string.Empty;
+    }
+
+    private static string NormalizeCodexMode(string mode) =>
+        mode.ToLowerInvariant() switch
+        {
+            "acceptedits" or "accept-edits" or "accept_edits" or "default" or "on-request" => "on-request",
+            "plan" or "untrusted" => "untrusted",
+            "bypasspermissions" or "bypass-permissions" or "yolo" or "auto" or "never" => "never",
+            _ => mode,
+        };
+
+    private static bool TryGetCodexModePresentation(string? agentType, string mode, out string displayName, out string sandboxDisplay)
+    {
+        if (!IsCodexAgent(agentType))
+        {
+            displayName = string.Empty;
+            sandboxDisplay = string.Empty;
+            return false;
+        }
+
+        var effectiveMode = NormalizeCodexMode(mode);
+        displayName = effectiveMode switch
+        {
+            "on-request" => "on-request (按需审批)",
+            "untrusted" => "untrusted (只读规划)",
+            "never" => "never (自动批准)",
+            _ => effectiveMode,
+        };
+
+        sandboxDisplay = effectiveMode switch
+        {
+            "untrusted" => "read-only",
+            "never" => "danger-full-access",
+            _ => "workspace-write",
+        };
+
+        return true;
+    }
 
     private string GetDisplaySessionId(string sessionKey, SessionRecord session)
     {
         if (_states.TryGetValue(sessionKey, out var state))
             return state.AgentSession.SessionId;
 
-        return session.AgentSessionId switch
+        return session.PendingStartMode switch
         {
-            "__continue__" => "(待恢复最近会话)",
-            { Length: > 0 } sid => sid,
-            _ => "(未启动)",
+            StartModes.Continue => "(待恢复最近会话)",
+            StartModes.Resume when !string.IsNullOrWhiteSpace(session.PendingResumeSessionId) => session.PendingResumeSessionId!,
+            _ => session.AgentSessionId switch
+            {
+                { Length: > 0 } sid => sid,
+                _ => "(未启动)",
+            },
         };
     }
 
@@ -1311,15 +1518,278 @@ public sealed class Engine : IAsyncDisposable
         return $"{content}\n\n---\n{status}";
     }
 
-    private static bool ShouldEmitThinking(IPlatform platform) => true;
+    private static bool ShouldEmitThinking() => true;
+
+    private static bool ShouldFlushThinking(System.Text.StringBuilder thinkingBuffer, string latestChunk)
+    {
+        if (thinkingBuffer.Length >= 160)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(latestChunk))
+            return false;
+
+        var trimmed = latestChunk.TrimEnd();
+        if (trimmed.Length == 0)
+            return false;
+
+        var lastChar = trimmed[^1];
+        return lastChar is '。' or '！' or '？' or '.' or '!' or '?' or '\n';
+    }
 
     private static bool ShouldUseStreamingPreview(IPlatform platform) =>
         !string.Equals(platform.Name, "feishu", StringComparison.OrdinalIgnoreCase);
 
+    private static string NormalizeFinalReplyForFeishu(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"(?<=[^\n])(?=```)", "\n");
+
+        var lines = new List<string>();
+        var inCodeFence = false;
+
+        foreach (var rawLine in normalized.Split('\n'))
+        {
+            var line = rawLine.TrimEnd();
+            if (!inCodeFence)
+            {
+                if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^\s*#{1,6}\s*$"))
+                    continue;
+
+                line = System.Text.RegularExpressions.Regex.Replace(line, @"^(#{1,6})(?=\S)", "$1 ");
+                line = System.Text.RegularExpressions.Regex.Replace(line, @"^-(?=\S)", "- ");
+            }
+
+            lines.Add(line);
+            if (CountCodeFenceMarkers(line) % 2 == 1)
+                inCodeFence = !inCodeFence;
+        }
+
+        var compactedLines = CompactFinalReplyBlankLines(lines).ToList();
+        var promptCollapsedLines = CollapsePromptAnswerBlankLines(compactedLines);
+        return string.Join("\n", promptCollapsedLines).Trim();
+    }
+
+    private static IEnumerable<string> CompactFinalReplyBlankLines(IEnumerable<string> lines)
+    {
+        var inCodeFence = false;
+        var previousBlank = true;
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.TrimEnd();
+
+            if (!inCodeFence && string.IsNullOrWhiteSpace(line))
+            {
+                if (previousBlank)
+                    continue;
+
+                previousBlank = true;
+                yield return string.Empty;
+                continue;
+            }
+
+            previousBlank = false;
+            yield return line;
+
+            if (CountCodeFenceMarkers(line) % 2 == 1)
+                inCodeFence = !inCodeFence;
+        }
+    }
+
+    private static IEnumerable<string> CollapsePromptAnswerBlankLines(IReadOnlyList<string> lines)
+    {
+        var inCodeFence = false;
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            {
+                yield return line;
+                inCodeFence = !inCodeFence;
+                continue;
+            }
+
+            if (!inCodeFence
+                && string.IsNullOrWhiteSpace(line)
+                && i > 0
+                && i + 1 < lines.Count
+                && EndsWithPromptLeadIn(lines[i - 1])
+                && IsStandaloneShortAnswer(lines[i + 1]))
+            {
+                continue;
+            }
+
+            yield return line;
+        }
+    }
+
+    private static bool EndsWithPromptLeadIn(string line)
+    {
+        var trimmed = line.TrimEnd();
+        return trimmed.EndsWith('：') || trimmed.EndsWith(':');
+    }
+
+    private static bool IsStandaloneShortAnswer(string line)
+    {
+        var trimmed = line.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length > 20)
+            return false;
+
+        if (trimmed.StartsWith("```", StringComparison.Ordinal)
+            || trimmed.StartsWith("#", StringComparison.Ordinal)
+            || trimmed.StartsWith("- ", StringComparison.Ordinal)
+            || trimmed.StartsWith("* ", StringComparison.Ordinal)
+            || System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^\d+[\.)]\s"))
+        {
+            return false;
+        }
+
+        return !trimmed.Contains('\n')
+               && !trimmed.Contains('：')
+               && !trimmed.Contains(':');
+    }
+
+    private static void AppendMarkdownChunk(System.Text.StringBuilder buffer, string chunk)
+    {
+        if (string.IsNullOrEmpty(chunk))
+            return;
+
+        var normalizedChunk = TrimOverlappingPrefix(buffer, chunk);
+        if (string.IsNullOrEmpty(normalizedChunk))
+            return;
+
+        if (buffer.Length > 0 && NeedsMarkdownSeparator(buffer, normalizedChunk))
+            buffer.Append('\n');
+
+        buffer.Append(normalizedChunk);
+    }
+
+    private static bool NeedsMarkdownSeparator(System.Text.StringBuilder buffer, string chunk)
+    {
+        var previous = GetTrailingText(buffer);
+        var current = chunk.TrimStart();
+        if (string.IsNullOrEmpty(previous) || string.IsNullOrEmpty(current))
+            return false;
+
+        return EndsWithMarkdownBoundary(previous) && StartsWithMarkdownBoundary(current);
+    }
+
+    private static string TrimOverlappingPrefix(System.Text.StringBuilder buffer, string chunk)
+    {
+        var trailing = GetTrailingText(buffer, 256);
+        if (string.IsNullOrEmpty(trailing) || string.IsNullOrEmpty(chunk))
+            return chunk;
+
+        var maxOverlap = Math.Min(trailing.Length, chunk.Length);
+        for (var overlap = maxOverlap; overlap >= 8; overlap--)
+        {
+            if (!trailing.EndsWith(chunk[..overlap], StringComparison.Ordinal))
+                continue;
+
+            return chunk[overlap..];
+        }
+
+        return chunk;
+    }
+
+    private static string GetTrailingText(System.Text.StringBuilder buffer, int maxLength = 64)
+    {
+        var length = Math.Min(buffer.Length, maxLength);
+        return length <= 0 ? string.Empty : buffer.ToString(buffer.Length - length, length).TrimEnd();
+    }
+
+    private static bool EndsWithMarkdownBoundary(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.TrimEnd();
+        if (trimmed.EndsWith("```", StringComparison.Ordinal))
+            return true;
+
+        var lastChar = trimmed[^1];
+        return lastChar is ':' or '：' or '\n';
+    }
+
+    private static bool StartsWithMarkdownBoundary(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.TrimStart();
+        if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            return true;
+        if (trimmed.StartsWith("#", StringComparison.Ordinal))
+            return true;
+        if (trimmed.StartsWith("- ", StringComparison.Ordinal) || trimmed.StartsWith("* ", StringComparison.Ordinal))
+            return true;
+
+        return System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^\d+[\.)]\s*") ||
+               trimmed.StartsWith("产物：", StringComparison.Ordinal) ||
+               trimmed.StartsWith("关键结构", StringComparison.Ordinal) ||
+               trimmed.StartsWith("构建结果", StringComparison.Ordinal) ||
+               trimmed.StartsWith("并且存在", StringComparison.Ordinal) ||
+               trimmed.StartsWith("如果你", StringComparison.Ordinal);
+    }
+
     private static IEnumerable<string> SplitMessage(string text, int maxLength)
     {
-        for (var i = 0; i < text.Length; i += maxLength)
-            yield return text.Substring(i, Math.Min(maxLength, text.Length - i));
+        if (string.IsNullOrEmpty(text))
+            yield break;
+
+        var remaining = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        var inCodeFence = false;
+
+        while (remaining.Length > 0)
+        {
+            var prefix = inCodeFence ? "```\n" : string.Empty;
+            var reserveForClosingFence = inCodeFence ? 4 : 0;
+            var budget = Math.Max(1, maxLength - prefix.Length - reserveForClosingFence);
+
+            var take = remaining.Length <= budget
+                ? remaining.Length
+                : FindSplitPosition(remaining, budget);
+
+            var body = remaining[..take].TrimEnd();
+            remaining = take >= remaining.Length
+                ? string.Empty
+                : remaining[take..].TrimStart('\n');
+
+            var endInCodeFence = inCodeFence ^ (CountCodeFenceMarkers(body) % 2 == 1);
+            var suffix = endInCodeFence ? "\n```" : string.Empty;
+            yield return prefix + body + suffix;
+            inCodeFence = endInCodeFence;
+        }
+    }
+
+    private static int FindSplitPosition(string text, int budget)
+    {
+        foreach (var separator in new[] { "\n\n", "\n", " ", "，", "。" })
+        {
+            var index = text.LastIndexOf(separator, budget, StringComparison.Ordinal);
+            if (index >= Math.Max(1, budget / 2))
+                return index + separator.Length;
+        }
+
+        return budget;
+    }
+
+    private static int CountCodeFenceMarkers(string text)
+    {
+        var count = 0;
+        var startIndex = 0;
+        while ((startIndex = text.IndexOf("```", startIndex, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            startIndex += 3;
+        }
+
+        return count;
     }
 
     /// <summary>获取所有活跃会话的状态快照。</summary>

@@ -37,7 +37,7 @@ public sealed class Message
             .ToArray();
 
     /// <summary>平台特定的回复上下文（用于回复该消息）。</summary>
-    public object? ReplyContext { get; init; }
+    public required object ReplyContext { get; init; }
 
     /// <summary>是否来自群聊。</summary>
     public bool IsGroup { get; init; }

@@ -71,6 +71,8 @@ public sealed class SessionManager
                             {
                                 AgentType = kv.Value.AgentType,
                                 ProjectKey = kv.Value.ProjectKey,
+                                PendingStartMode = kv.Value.PendingStartMode,
+                                PendingResumeSessionId = kv.Value.PendingResumeSessionId,
                                 Platform = kv.Value.Platform,
                                 From = kv.Value.From,
                                 FromName = kv.Value.FromName,
@@ -103,6 +105,8 @@ public sealed class SessionManager
                         SessionKey = key,
                         AgentType = string.IsNullOrWhiteSpace(sr.AgentType) ? "claudecode" : sr.AgentType,
                         ProjectKey = sr.ProjectKey,
+                        PendingStartMode = sr.PendingStartMode,
+                        PendingResumeSessionId = sr.PendingResumeSessionId,
                         Platform = sr.Platform,
                         From = sr.From ?? key,
                         FromName = sr.FromName,
@@ -169,6 +173,8 @@ public sealed class SessionManager
     {
         public string? AgentType { get; set; }
         public string? ProjectKey { get; set; }
+        public string? PendingStartMode { get; set; }
+        public string? PendingResumeSessionId { get; set; }
         public string? Platform { get; set; }
         public string? From { get; set; }
         public string? FromName { get; set; }

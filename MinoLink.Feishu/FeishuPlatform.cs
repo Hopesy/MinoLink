@@ -101,6 +101,10 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 
         try
         {
+            _logger.LogInformation("飞书回复分片: chatId={ChatId}, length={Length}\n<<<CHUNK\n{Chunk}\nCHUNK>>>",
+                ctx.ChatId, text?.Length ?? 0, text ?? string.Empty);
+            _logger.LogInformation("飞书最终 markdown: chatId={ChatId}, length={Length}\n<<<FEISHU_MARKDOWN\n{Markdown}\nFEISHU_MARKDOWN>>>",
+                ctx.ChatId, ExtractMarkdownContent(content)?.Length ?? 0, ExtractMarkdownContent(content) ?? string.Empty);
             await _api.PostImV1MessagesAsync("chat_id", dto);
         }
         catch (Exception ex)
@@ -327,35 +331,14 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 
     // ─────────── 消息格式构建 ───────────
 
-    /// <summary>
-    /// 根据内容自动选择消息格式：
-    /// - 包含复杂 Markdown（代码块、表格）→ Interactive Card
-    /// - 包含简单 Markdown（粗体、列表）→ Interactive Card
-    /// - 纯文本 → text
-    /// </summary>
-    private static (string MsgType, string Content) BuildReplyContent(string text)
-    {
-        if (HasMarkdown(text))
-            return ("interactive", BuildMarkdownCardJson(text));
-
-        return ("text", JsonSerializer.Serialize(new { text }));
-    }
-
-    /// <summary>检测文本是否包含 Markdown 标记。</summary>
-    private static bool HasMarkdown(string text) =>
-        text.Contains("```") ||
-        text.Contains("**") ||
-        text.Contains("~~") ||
-        text.Contains('`') ||
-        text.Contains("\n-") ||
-        text.Contains("\n*") ||
-        text.Contains("\n#") ||
-        text.Contains("\n1.") ||
-        text.Contains("---");
+    /// <summary>统一使用飞书 Interactive Card + markdown 渲染回复。</summary>
+    private static (string MsgType, string Content) BuildReplyContent(string text) =>
+        ("interactive", BuildMarkdownCardJson(text));
 
     /// <summary>构建飞书 Interactive Card JSON (schema 2.0, markdown 元素)。</summary>
     private static string BuildMarkdownCardJson(string markdownContent)
     {
+        var normalizedContent = NormalizeFeishuMarkdown(markdownContent);
         var card = new
         {
             schema = "2.0",
@@ -364,11 +347,151 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             {
                 elements = new object[]
                 {
-                    new { tag = "markdown", content = markdownContent },
+                    new { tag = "markdown", content = normalizedContent },
                 },
             },
         };
         return JsonSerializer.Serialize(card);
+    }
+
+    private static string NormalizeFeishuMarkdown(string markdownContent)
+    {
+        if (string.IsNullOrWhiteSpace(markdownContent))
+            return string.Empty;
+
+        var text = markdownContent
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+        var normalizedLines = new List<string>();
+        var inCodeFence = false;
+
+        foreach (var rawLine in text.Split('\n'))
+        {
+            foreach (var segment in SplitMergedMarkdownLine(rawLine))
+            {
+                var trimmedStart = segment.TrimStart();
+                if (trimmedStart.StartsWith("```", StringComparison.Ordinal))
+                {
+                    normalizedLines.Add(trimmedStart);
+                    inCodeFence = !inCodeFence;
+                    continue;
+                }
+
+                if (inCodeFence)
+                {
+                    normalizedLines.Add(segment);
+                    continue;
+                }
+
+                normalizedLines.Add(NormalizeFeishuMarkdownLine(segment));
+            }
+        }
+
+        return string.Join("\n", CompactBlankLines(normalizedLines)).Trim();
+    }
+
+    private static IEnumerable<string> CompactBlankLines(IEnumerable<string> lines)
+    {
+        var inCodeFence = false;
+        var previousBlank = true;
+        foreach (var line in lines)
+        {
+            var trimmedStart = line.TrimStart();
+            if (trimmedStart.StartsWith("```", StringComparison.Ordinal))
+            {
+                if (!previousBlank)
+                    yield return string.Empty;
+
+                yield return trimmedStart;
+                inCodeFence = !inCodeFence;
+                previousBlank = false;
+                continue;
+            }
+
+            if (inCodeFence)
+            {
+                yield return line;
+                previousBlank = false;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (previousBlank)
+                    continue;
+
+                yield return string.Empty;
+                previousBlank = true;
+                continue;
+            }
+
+            yield return line.TrimEnd();
+            previousBlank = false;
+        }
+    }
+
+    private static IEnumerable<string> SplitMergedMarkdownLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+        {
+            yield return string.Empty;
+            yield break;
+        }
+
+        var text = line;
+        text = Regex.Replace(text, @"(?<=[^\n])(?=```)", "\n");
+        text = Regex.Replace(text, @"(?<=[^\n])(?=#{1,6}\s*\S)", "\n");
+        text = Regex.Replace(text, @"(?<=[\u4e00-\u9fff：:])(?=\d+[\.)]\s*\S)", "\n");
+
+        foreach (var segment in text.Split('\n'))
+            yield return segment;
+    }
+
+    private static string NormalizeFeishuMarkdownLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return string.Empty;
+
+        var headingMatch = Regex.Match(line, @"^\s*#{1,6}\s*(.+?)\s*$");
+        if (headingMatch.Success)
+        {
+            var headingText = headingMatch.Groups[1].Value.Trim();
+            return string.IsNullOrEmpty(headingText) ? string.Empty : $"**{headingText}**";
+        }
+
+        return line.TrimEnd();
+    }
+
+    private static string? ExtractMarkdownContent(string cardJson)
+    {
+        if (string.IsNullOrWhiteSpace(cardJson))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(cardJson);
+            if (!document.RootElement.TryGetProperty("body", out var body)
+                || !body.TryGetProperty("elements", out var elements)
+                || elements.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var element in elements.EnumerateArray())
+            {
+                if (!element.TryGetProperty("tag", out var tag)
+                    || !string.Equals(tag.GetString(), "markdown", StringComparison.Ordinal))
+                    continue;
+
+                if (element.TryGetProperty("content", out var content))
+                    return content.GetString();
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
