@@ -898,6 +898,11 @@ public sealed class Engine : IAsyncDisposable
         _logger.LogInformation("用户请求中断当前回复: sessionKey={SessionKey}", msg.SessionKey);
 
         await InterruptOrDestroyStateAsync(msg.SessionKey);
+
+        // 协议中断成功后 state 保留在 _states 中，重置 StopRequested 以便下次正常处理
+        if (_states.TryGetValue(msg.SessionKey, out var remaining))
+            remaining.StopRequested = false;
+
         await platform.ReplyAsync(msg.ReplyContext, "⏹️ 已停止当前回复。直接发送新消息即可继续。", _cts.Token);
         return true;
     }
@@ -1312,6 +1317,13 @@ public sealed class Engine : IAsyncDisposable
         {
             if (await state.AgentSession.InterruptAsync(AgentInterruptTimeout, _cts.Token))
             {
+                // 协议中断成功，drain 残留事件防止下次 turn 读到脏数据
+                var drained = 0;
+                while (state.AgentSession.Events.TryRead(out _))
+                    drained++;
+                if (drained > 0)
+                    _logger.LogInformation("已清理中断后残留事件: sessionKey={SessionKey}, count={Count}", sessionKey, drained);
+
                 _logger.LogInformation("Agent 协议中断成功: sessionKey={SessionKey}", sessionKey);
                 return;
             }
