@@ -456,6 +456,12 @@ public sealed class AgentRoutingBehaviorTests
             return Task.CompletedTask;
         }
 
+        public Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> ClearAsync(CancellationToken ct = default) =>
+            Task.FromResult(false);
+
         public Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default) =>
             Task.CompletedTask;
 

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
@@ -23,11 +24,13 @@ public sealed class CodexSession : IAgentSession
     private readonly CancellationTokenSource _cts = new();
     private readonly bool _useContinue;
     private readonly TaskCompletionSource<string> _threadReady = new();
+    private readonly SemaphoreSlim _stdinWriteLock = new(1, 1);
     private readonly HashSet<string> _announcedItems = [];
     private readonly Dictionary<string, int> _agentMessageLengths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _agentMessagePhases = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingRequest> _pendingRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BackgroundTaskState> _backgroundTasks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _pendingRpcAcks = new();
     private readonly List<TaskRecord> _tasks = [];
     private int _taskSequence;
 
@@ -149,6 +152,67 @@ public sealed class CodexSession : IAgentSession
         });
     }
 
+    public async Task<bool> ClearAsync(CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return false;
+
+        try
+        {
+            _logger.LogInformation("→ Codex thread/start (协议级清除上下文), 旧 threadId={OldThreadId}", _sessionId);
+            _turnId = null;
+            _announcedItems.Clear();
+            _agentMessageLengths.Clear();
+            _agentMessagePhases.Clear();
+
+            await SendRequestAsync("thread/start", new { model = _model ?? DefaultModelName });
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+            // _threadReady 只能 set 一次，新线程的 threadId 通过 HandleThreadStarted/HandleRpcResult 更新 _sessionId
+            // 等待 stdout 确认新 threadId
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            var oldSessionId = _sessionId;
+            while (_sessionId == oldSessionId && DateTimeOffset.UtcNow < deadline)
+                await Task.Delay(100, timeoutCts.Token);
+
+            var success = _sessionId != oldSessionId;
+            _logger.LogInformation("Codex thread/start {Result}: newThreadId={NewThreadId}",
+                success ? "成功" : "超时", _sessionId);
+            return success;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Codex thread/start 失败");
+            return false;
+        }
+    }
+
+    public async Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return false;
+        if (string.IsNullOrWhiteSpace(_sessionId) || string.IsNullOrWhiteSpace(_turnId))
+            return false;
+
+        try
+        {
+            var ack = await SendRequestWithAckAsync("turn/interrupt", new
+            {
+                threadId = _sessionId,
+                turnId = _turnId,
+            }, ct);
+
+            return await ack.WaitAsync(timeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Codex turn/interrupt 超时: threadId={ThreadId}, turnId={TurnId}", _sessionId, _turnId);
+            return false;
+        }
+    }
+
     public async Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default)
     {
         if (!_pendingRequests.Remove(requestId, out var pending))
@@ -244,6 +308,15 @@ public sealed class CodexSession : IAgentSession
 
     private void HandleRpcResult(JsonElement root)
     {
+        if (root.TryGetProperty("id", out var idEl) && TryGetNumericId(idEl, out var rpcId))
+        {
+            if (_pendingRpcAcks.TryRemove(rpcId, out var ack))
+            {
+                var ok = !root.TryGetProperty("error", out _);
+                ack.TrySetResult(ok);
+            }
+        }
+
         if (root.TryGetProperty("result", out var result) &&
             result.TryGetProperty("thread", out var thread) &&
             thread.TryGetProperty("id", out var threadIdEl))
@@ -511,10 +584,12 @@ public sealed class CodexSession : IAgentSession
 
         if (string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase))
         {
-            await writer.WriteAsync(new AgentEvent { Type = AgentEventType.Error, Content = "Codex 当前回合已中断。" });
+            _turnId = null;
+            _logger.LogInformation("Codex turn 已被中断（TurnMerge 正常行为），不写入事件流");
             return;
         }
 
+        _turnId = null;
         await writer.WriteAsync(new AgentEvent { Type = AgentEventType.Result, Content = string.Empty });
     }
 
@@ -545,7 +620,7 @@ public sealed class CodexSession : IAgentSession
         var id = Interlocked.Increment(ref _requestId);
         var payload = JsonSerializer.Serialize(new { id, method, @params });
         _logger.LogInformation("→ codex stdin: {Json}", payload.Length > 200 ? payload[..200] + "..." : payload);
-        await _stdin.WriteLineAsync(payload);
+        await WriteLineAsync(payload, CancellationToken.None);
     }
 
     private async Task SendNotificationAsync(string method, object @params)
@@ -555,7 +630,7 @@ public sealed class CodexSession : IAgentSession
 
         var payload = JsonSerializer.Serialize(new { method, @params });
         _logger.LogInformation("→ codex stdin: {Json}", payload.Length > 200 ? payload[..200] + "..." : payload);
-        await _stdin.WriteLineAsync(payload);
+        await WriteLineAsync(payload, CancellationToken.None);
     }
 
     private async Task SendResponseAsync(string requestId, object result)
@@ -566,7 +641,7 @@ public sealed class CodexSession : IAgentSession
         object id = long.TryParse(requestId, out var numericId) ? numericId : requestId;
         var payload = JsonSerializer.Serialize(new { id, result });
         _logger.LogInformation("→ codex 响应: {Json}", payload.Length > 200 ? payload[..200] + "..." : payload);
-        await _stdin.WriteLineAsync(payload);
+        await WriteLineAsync(payload, CancellationToken.None);
     }
 
     private object[] BuildInputItems(string content, IReadOnlyList<MessageAttachment>? attachments)
@@ -1858,6 +1933,9 @@ public sealed class CodexSession : IAgentSession
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
+        foreach (var ack in _pendingRpcAcks.Values)
+            ack.TrySetResult(false);
+        _pendingRpcAcks.Clear();
         if (_stdin is not null)
         {
             try { _stdin.Close(); } catch { }
@@ -1889,7 +1967,66 @@ public sealed class CodexSession : IAgentSession
         }
 
         _process?.Dispose();
+        _stdinWriteLock.Dispose();
         _cts.Dispose();
+    }
+
+    private async Task<Task<bool>> SendRequestWithAckAsync(string method, object @params, CancellationToken ct)
+    {
+        if (_stdin is null)
+            throw new InvalidOperationException("会话未启动");
+
+        var id = Interlocked.Increment(ref _requestId);
+        var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingRpcAcks.TryAdd(id, ack))
+            throw new InvalidOperationException($"Codex RPC 请求 ID 冲突: {id}");
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { id, method, @params });
+            _logger.LogInformation("→ codex stdin: {Json}", payload.Length > 200 ? payload[..200] + "..." : payload);
+            await WriteLineAsync(payload, ct);
+            return ack.Task;
+        }
+        catch
+        {
+            _pendingRpcAcks.TryRemove(id, out _);
+            throw;
+        }
+    }
+
+    private async Task WriteLineAsync(string payload, CancellationToken ct)
+    {
+        if (_stdin is null)
+            throw new InvalidOperationException("会话未启动");
+
+        await _stdinWriteLock.WaitAsync(ct);
+        try
+        {
+            if (_stdin is null)
+                throw new InvalidOperationException("会话未启动");
+
+            await _stdin.WriteLineAsync(payload);
+        }
+        finally
+        {
+            _stdinWriteLock.Release();
+        }
+    }
+
+    private static bool TryGetNumericId(JsonElement idElement, out int id)
+    {
+        if (idElement.ValueKind == JsonValueKind.Number && idElement.TryGetInt32(out id))
+            return true;
+
+        if (idElement.ValueKind == JsonValueKind.String &&
+            int.TryParse(idElement.GetString(), out id))
+        {
+            return true;
+        }
+
+        id = default;
+        return false;
     }
 
     private sealed record ToolExecutionResult(bool Success, string? Message = null, Dictionary<string, object?>? Payload = null, string? Text = null);

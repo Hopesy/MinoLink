@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using System.Collections.Concurrent;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,8 @@ public sealed class ClaudeSession : IAgentSession
     private readonly string _mode;
     private readonly CancellationTokenSource _cts = new();
     private readonly IAgentMessageEncoder _messageEncoder;
+    private readonly SemaphoreSlim _stdinWriteLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingInterrupts = new(StringComparer.Ordinal);
 
     private Process? _process;
     private StreamWriter? _stdin;
@@ -112,7 +115,68 @@ public sealed class ClaudeSession : IAgentSession
 
         var json = JsonSerializer.Serialize(msg);
         _logger.LogInformation("→ stdin: {Json}", json.Length > 200 ? json[..200] + "..." : json);
-        await _stdin.WriteLineAsync(json);
+        await WriteLineAsync(json, ct);
+    }
+
+    public async Task<bool> ClearAsync(CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return false;
+
+        try
+        {
+            var msg = new
+            {
+                type = "user",
+                message = new { role = "user", content = "/clear" },
+            };
+            var json = JsonSerializer.Serialize(msg);
+            _logger.LogInformation("→ Claude /clear (协议级清除上下文)");
+            await WriteLineAsync(json, ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Claude /clear 发送失败");
+            return false;
+        }
+    }
+
+    public async Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return false;
+
+        var requestId = Guid.NewGuid().ToString("N");
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingInterrupts.TryAdd(requestId, completion))
+            return false;
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new
+                {
+                    subtype = "interrupt",
+                },
+            });
+
+            _logger.LogInformation("→ Claude interrupt: requestId={RequestId}", requestId);
+            await WriteLineAsync(payload, ct);
+            return await completion.Task.WaitAsync(timeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Claude interrupt 超时: requestId={RequestId}", requestId);
+            return false;
+        }
+        finally
+        {
+            _pendingInterrupts.TryRemove(requestId, out _);
+        }
     }
 
     public async Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default)
@@ -137,7 +201,7 @@ public sealed class ClaudeSession : IAgentSession
         var json = JsonSerializer.Serialize(msg);
         _logger.LogInformation("→ 权限响应: {RequestId} allow={Allow} allowAll={AllowAll}",
             requestId, response.Allow, response.AllowAll);
-        await _stdin.WriteLineAsync(json);
+        await WriteLineAsync(json, ct);
     }
 
     private async Task ReadLoopAsync(StreamReader stdout)
@@ -176,6 +240,9 @@ public sealed class ClaudeSession : IAgentSession
                             break;
                         case "result":
                             await HandleResultAsync(root, writer);
+                            break;
+                        case "control_response":
+                            HandleControlResponse(root);
                             break;
                         case "control_request":
                             await HandleControlRequestAsync(root, writer);
@@ -272,6 +339,33 @@ public sealed class ClaudeSession : IAgentSession
         }
 
         await writer.WriteAsync(new AgentEvent { Type = AgentEventType.Result, Content = content });
+    }
+
+    private void HandleControlResponse(JsonElement root)
+    {
+        if (!root.TryGetProperty("response", out var response))
+            return;
+
+        var requestId = response.TryGetProperty("request_id", out var requestIdEl)
+            ? requestIdEl.GetString()
+            : null;
+        if (string.IsNullOrWhiteSpace(requestId) || !_pendingInterrupts.TryGetValue(requestId, out var completion))
+            return;
+
+        var subtype = response.TryGetProperty("subtype", out var subtypeEl)
+            ? subtypeEl.GetString()
+            : null;
+        if (string.Equals(subtype, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("Claude interrupt 已确认: requestId={RequestId}", requestId);
+            completion.TrySetResult(true);
+            return;
+        }
+
+        var error = response.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null;
+        _logger.LogWarning("Claude interrupt 被拒绝: requestId={RequestId}, subtype={Subtype}, error={Error}",
+            requestId, subtype ?? "<null>", error ?? "<none>");
+        completion.TrySetResult(false);
     }
 
     private async Task HandleControlRequestAsync(JsonElement root, ChannelWriter<AgentEvent> writer)
@@ -672,6 +766,9 @@ public sealed class ClaudeSession : IAgentSession
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
+        foreach (var pendingInterrupt in _pendingInterrupts.Values)
+            pendingInterrupt.TrySetResult(false);
+        _pendingInterrupts.Clear();
 
         if (_stdin is not null)
         {
@@ -690,6 +787,26 @@ public sealed class ClaudeSession : IAgentSession
         }
 
         _process?.Dispose();
+        _stdinWriteLock.Dispose();
         _cts.Dispose();
+    }
+
+    private async Task WriteLineAsync(string payload, CancellationToken ct)
+    {
+        if (_stdin is null)
+            throw new InvalidOperationException("会话未启动");
+
+        await _stdinWriteLock.WaitAsync(ct);
+        try
+        {
+            if (_stdin is null)
+                throw new InvalidOperationException("会话未启动");
+
+            await _stdin.WriteLineAsync(payload);
+        }
+        finally
+        {
+            _stdinWriteLock.Release();
+        }
     }
 }

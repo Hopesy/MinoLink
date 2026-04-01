@@ -119,6 +119,7 @@ public partial class App : System.Windows.Application
 
         var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         builder.Configuration.AddJsonFile(configPath, optional: true, reloadOnChange: true);
+        builder.Configuration.AddUserSecrets<App>(optional: true);
         builder.Configuration.AddEnvironmentVariables("MINO_");
 
         var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
@@ -129,6 +130,9 @@ public partial class App : System.Windows.Application
             options.SingleLine = true;
             options.TimestampFormat = "HH:mm:ss ";
         });
+        builder.Logging.AddFilter("FeishuNetSdk", LogLevel.Warning);
+        builder.Logging.AddFilter("System.Net.Http.HttpClient.FeishuNetSdk", LogLevel.Warning);
+        builder.Logging.AddFilter("WebApiClientCore", LogLevel.Warning);
         builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
 
         var config = builder.Configuration.GetSection("MinoLink").Get<MinoLinkConfig>()

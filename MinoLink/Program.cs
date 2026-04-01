@@ -15,6 +15,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // 加载配置
 builder.Configuration.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+builder.Configuration.AddUserSecrets<Program>(optional: true);
 builder.Configuration.AddEnvironmentVariables("MINO_");
 
 var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
@@ -25,6 +26,9 @@ builder.Logging.AddSimpleConsole(options =>
     options.SingleLine = true;
     options.TimestampFormat = "HH:mm:ss ";
 });
+builder.Logging.AddFilter("FeishuNetSdk", LogLevel.Warning);
+builder.Logging.AddFilter("System.Net.Http.HttpClient.FeishuNetSdk", LogLevel.Warning);
+builder.Logging.AddFilter("WebApiClientCore", LogLevel.Warning);
 builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
 
 var config = builder.Configuration.GetSection("MinoLink").Get<MinoLinkConfig>()

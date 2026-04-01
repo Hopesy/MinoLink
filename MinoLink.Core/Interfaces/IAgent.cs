@@ -33,6 +33,12 @@ public interface IAgentSession : IAsyncDisposable
     /// <summary>向 Agent 发送用户消息。</summary>
     Task SendAsync(string content, IReadOnlyList<MessageAttachment>? attachments = null, CancellationToken ct = default);
 
+    /// <summary>优雅中断当前正在执行的 turn。返回 false 表示未确认中断，应由上层决定是否 fallback kill。</summary>
+    Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default);
+
+    /// <summary>协议级清除对话上下文。返回 true 表示成功，false 表示不支持（上层应 fallback 杀进程重建）。</summary>
+    Task<bool> ClearAsync(CancellationToken ct = default);
+
     /// <summary>回复权限请求。</summary>
     Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default);
 

@@ -2,8 +2,10 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
+using MinoLink.Core.TurnMerge;
 
 namespace MinoLink.Core;
 
@@ -14,6 +16,7 @@ public sealed class Engine : IAsyncDisposable
 {
     private const string ClaudeAgentType = "claudecode";
     private const string CodexAgentType = "codex";
+    private static readonly TimeSpan AgentInterruptTimeout = TimeSpan.FromMilliseconds(800);
 
     private readonly record struct AgentDirectiveResult(bool Recognized, bool AgentChanged)
     {
@@ -34,6 +37,7 @@ public sealed class Engine : IAsyncDisposable
     private readonly ILogger<Engine> _logger;
     private readonly IScreenshotService? _screenshotService;
     private readonly CancellationTokenSource _cts = new();
+    private readonly SessionTurnCoordinator _turnCoordinator;
 
     // 默认工作目录
     private readonly string _defaultWorkDir;
@@ -45,7 +49,8 @@ public sealed class Engine : IAsyncDisposable
     private int _disposeState;
 
     public Engine(string projectName, Func<string, IAgent> agentFactory, IEnumerable<IPlatform> platforms,
-        string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger, IScreenshotService? screenshotService = null)
+        string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger, IScreenshotService? screenshotService = null,
+        TurnMergeOptions? turnMergeOptions = null)
     {
         _projectName = projectName;
         _agentFactory = agentFactory;
@@ -54,6 +59,11 @@ public sealed class Engine : IAsyncDisposable
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
         _logger = logger;
         _screenshotService = screenshotService;
+        _turnCoordinator = new SessionTurnCoordinator(
+            turnMergeOptions ?? new TurnMergeOptions(),
+            ExecuteTurnSnapshotAsync,
+            InterruptActiveExecutionAsync,
+            NullLogger<SessionTurnCoordinator>.Instance);
     }
 
     /// <summary>启动所有平台，注册消息回调。</summary>
@@ -100,40 +110,11 @@ public sealed class Engine : IAsyncDisposable
         }
         session.LastActiveAt = DateTimeOffset.UtcNow;
 
-        // 获取该会话的锁
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
-
-        if (!await sessionLock.WaitAsync(TimeSpan.Zero))
-        {
-            await platform.ReplyAsync(msg.ReplyContext, "上一条消息还在处理中，请稍候...", _cts.Token);
-            return;
-        }
-
-        // 在后台处理，释放平台回调线程
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await ProcessMessageAsync(platform, msg, session, directiveResult.Recognized);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "处理消息异常: {SessionKey}", msg.SessionKey);
-                try
-                {
-                    await platform.ReplyAsync(msg.ReplyContext, $"处理异常: {ex.Message}", _cts.Token);
-                }
-                catch { /* 回复失败则忽略 */ }
-            }
-            finally
-            {
-                sessionLock.Release();
-            }
-        }, _cts.Token);
+        await _turnCoordinator.EnqueueAsync(platform, msg, session, directiveResult.Recognized, _cts.Token);
     }
 
     /// <summary>消息处理核心逻辑。</summary>
-    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session, bool useSelectedAgentForStartup = false)
+    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session, bool useSelectedAgentForStartup = false, CancellationToken executionCt = default)
     {
         var workDirNotice = EnsureSessionWorkDir(session);
         if (!string.IsNullOrWhiteSpace(workDirNotice))
@@ -142,6 +123,7 @@ public sealed class Engine : IAsyncDisposable
         _logger.LogInformation("[{Platform}] 创建/获取 Agent 会话: {SessionKey}", platform.Name, msg.SessionKey);
         var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session, useSelectedAgentForStartup);
         var state = stateStart.State;
+        state.StopRequested = false;
         _logger.LogInformation("[{Platform}] Agent 会话就绪: {SessionId}", platform.Name, state.AgentSession.SessionId);
 
         if (!string.IsNullOrWhiteSpace(stateStart.ConnectionNotice))
@@ -159,7 +141,7 @@ public sealed class Engine : IAsyncDisposable
                 msg.Content.Length > 50 ? msg.Content[..50] + "..." : msg.Content);
             try
             {
-                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, _cts.Token);
+                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("管道已关闭") || ex.Message.Contains("会话已关闭") || ex.InnerException is IOException)
             {
@@ -170,13 +152,17 @@ public sealed class Engine : IAsyncDisposable
                 state = newStart.State;
                 if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
                     await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, _cts.Token);
-                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, _cts.Token);
+                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
             }
             _logger.LogInformation("[{Platform}] 消息已发送，开始等待 Agent 事件流...", platform.Name);
 
             // 处理事件流
-            await ProcessEventsAsync(platform, msg.ReplyContext, state, _cts.Token);
+            await ProcessEventsAsync(platform, msg.ReplyContext, state, executionCt);
             _logger.LogInformation("[{Platform}] 事件流处理完毕", platform.Name);
+        }
+        catch (OperationCanceledException) when (executionCt.IsCancellationRequested)
+        {
+            _logger.LogInformation("[{Platform}] 当前 turn 已取消: {SessionKey}", platform.Name, msg.SessionKey);
         }
         catch (Exception ex) when (state.StopRequested)
         {
@@ -307,6 +293,8 @@ public sealed class Engine : IAsyncDisposable
                         break;
 
                     case AgentEventType.Result:
+                        if (state.StopRequested)
+                            return;
                         await FlushThinkingAsync();
                         var flushedText = textBuffer.Length > 0;
                         await FlushTextAsync(normalizeFinalSummary: true);
@@ -335,6 +323,8 @@ public sealed class Engine : IAsyncDisposable
                         return;
 
                     case AgentEventType.Error:
+                        if (state.StopRequested)
+                            return;
                         await FlushThinkingAsync();
                         var errorText = string.IsNullOrWhiteSpace(evt.Content)
                             ? Truncate(textBuffer.ToString(), 2000)
@@ -728,7 +718,9 @@ public sealed class Engine : IAsyncDisposable
         if (!_states.TryGetValue(msg.SessionKey, out var state) || state.PendingUserQuestion is null)
             return false;
 
-        if (!state.PendingUserQuestion.Resolve(msg.Content.Trim()))
+        var pendingQuestion = state.PendingUserQuestion;
+
+        if (!pendingQuestion.Resolve(msg.Content.Trim()))
         {
             _logger.LogWarning("文本回答重复或过期: sessionKey={SessionKey}, content={Content}",
                 msg.SessionKey, msg.Content);
@@ -736,7 +728,7 @@ public sealed class Engine : IAsyncDisposable
         }
 
         _logger.LogInformation("收到文本问题回答: sessionKey={SessionKey}, requestId={RequestId}, answer={Answer}",
-            msg.SessionKey, state.PendingUserQuestion.RequestId, msg.Content);
+            msg.SessionKey, pendingQuestion.RequestId, msg.Content);
 
         await platform.ReplyAsync(msg.ReplyContext, "✅ 已提交回答", _cts.Token);
         return true;
@@ -817,6 +809,7 @@ public sealed class Engine : IAsyncDisposable
         {
             "new" => await CmdNewAsync(platform, msg, args),
             "stop" => await CmdStopAsync(platform, msg),
+            "close" => await CmdCloseAsync(platform, msg),
             "clear" => await CmdClearAsync(platform, msg),
             "resume" => await CmdResumeAsync(platform, msg),
             "switch" => await CmdSwitchAsync(platform, msg, args),
@@ -888,8 +881,15 @@ public sealed class Engine : IAsyncDisposable
     /// <summary>/stop - 中断当前正在运行的回复，但保留会话记录。</summary>
     private async Task<bool> CmdStopAsync(IPlatform platform, Message msg)
     {
-        if (!_states.TryRemove(msg.SessionKey, out var state))
+        var hadTurnRuntime = await _turnCoordinator.ResetAsync(msg.SessionKey);
+        if (!_states.TryGetValue(msg.SessionKey, out var state))
         {
+            if (hadTurnRuntime)
+            {
+                await platform.ReplyAsync(msg.ReplyContext, "⏹️ 已停止当前回复。直接发送新消息即可继续。", _cts.Token);
+                return true;
+            }
+
             await platform.ReplyAsync(msg.ReplyContext, "当前没有正在运行的回复。", _cts.Token);
             return true;
         }
@@ -897,16 +897,64 @@ public sealed class Engine : IAsyncDisposable
         state.StopRequested = true;
         _logger.LogInformation("用户请求中断当前回复: sessionKey={SessionKey}", msg.SessionKey);
 
-        await state.AgentSession.DisposeAsync();
+        await InterruptOrDestroyStateAsync(msg.SessionKey);
         await platform.ReplyAsync(msg.ReplyContext, "⏹️ 已停止当前回复。直接发送新消息即可继续。", _cts.Token);
         return true;
     }
 
-    /// <summary>/clear - 清除当前对话上下文（杀进程，保留会话，下次 resume 恢复）。</summary>
+    /// <summary>/clear - 清除当前对话上下文（优先协议级清除，不支持则杀进程重建）。</summary>
     private async Task<bool> CmdClearAsync(IPlatform platform, Message msg)
     {
-        await DestroyStateAsync(msg.SessionKey);
+        // 先中断 TurnCoordinator 中可能排队的消息
+        await _turnCoordinator.ResetAsync(msg.SessionKey);
+
+        if (_states.TryGetValue(msg.SessionKey, out var state))
+        {
+            try
+            {
+                if (await state.AgentSession.ClearAsync(_cts.Token))
+                {
+                    var session = _sessions.GetActive(msg.SessionKey);
+                    if (session is not null)
+                    {
+                        session.AgentSessionId = state.AgentSession.SessionId;
+                        _sessions.Save();
+                    }
+
+                    _logger.LogInformation("协议级清除上下文成功: sessionKey={SessionKey}", msg.SessionKey);
+                    await platform.ReplyAsync(msg.ReplyContext, "🗑️ 已清除对话上下文（协议级）。", _cts.Token);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "协议级清除上下文失败，回退杀进程: sessionKey={SessionKey}", msg.SessionKey);
+            }
+        }
+
+        // fallback：杀进程
+        await DestroyInteractiveStateAsync(msg.SessionKey);
         await platform.ReplyAsync(msg.ReplyContext, "🗑️ 已清除对话上下文。", _cts.Token);
+        return true;
+    }
+
+    /// <summary>/close - 关闭 Agent 终端进程并清除会话记录，下次发消息将启动全新会话。</summary>
+    private async Task<bool> CmdCloseAsync(IPlatform platform, Message msg)
+    {
+        await _turnCoordinator.ResetAsync(msg.SessionKey);
+        await DestroyInteractiveStateAsync(msg.SessionKey);
+
+        var session = _sessions.GetActive(msg.SessionKey);
+        if (session is not null)
+        {
+            session.AgentSessionId = null;
+            session.PendingStartMode = null;
+            session.PendingResumeSessionId = null;
+            _sessions.Save();
+        }
+
+        await platform.ReplyAsync(msg.ReplyContext,
+            "🔌 已关闭 Agent 终端进程并清除会话。\n下次发送消息将启动全新会话。", _cts.Token);
         return true;
     }
 
@@ -957,6 +1005,7 @@ public sealed class Engine : IAsyncDisposable
         }
 
         var currentId = session.PendingResumeSessionId ?? session.AgentSessionId;
+        var currentIdInList = currentId is not null && nativeSessions.Any(s => s.SessionId == currentId);
         var sb = new System.Text.StringBuilder();
         var agentDisplay = GetAgentDisplayName(session.AgentType);
         sb.AppendLine($"**{agentDisplay} 会话列表**");
@@ -964,11 +1013,15 @@ public sealed class Engine : IAsyncDisposable
         for (var i = 0; i < nativeSessions.Count; i++)
         {
             var s = nativeSessions[i];
-            var marker = s.SessionId == currentId ? " ▶" : "  ";
+            var marker = currentIdInList && s.SessionId == currentId ? " ▶" : "  ";
             var lastActive = s.LastActive.ToString("MM-dd HH:mm");
             var summary = string.IsNullOrWhiteSpace(s.Summary) ? "(无摘要)" : s.Summary;
             sb.AppendLine($"{marker} **{i + 1}.** {lastActive}  {summary}");
         }
+
+        if (!currentIdInList && currentId is not null)
+            sb.AppendLine($"\n ▶ 当前活跃会话: `{currentId[..Math.Min(12, currentId.Length)]}…` (新建，尚无历史记录)");
+
         sb.AppendLine();
         sb.AppendLine("使用 `/switch <序号>` 恢复指定会话");
 
@@ -1213,7 +1266,8 @@ public sealed class Engine : IAsyncDisposable
                    **MinoLink 命令**
 
                    `/new [--project 路径]` - 开始全新会话
-                   `/stop` - 中断当前正在运行的回复
+                   `/stop` - 中断当前回复（协议中断，保留会话）
+                   `/close` - 关闭 Agent 终端进程（彻底销毁）
                    `/clear` - 清除当前对话上下文
                    `/continue` - 继续最近一次会话
                    `/resume` - 列出当前目录的历史会话
@@ -1233,11 +1287,65 @@ public sealed class Engine : IAsyncDisposable
     /// <summary>销毁指定 sessionKey 的 InteractiveState（杀进程）。</summary>
     private async Task DestroyStateAsync(string sessionKey)
     {
+        await _turnCoordinator.ResetAsync(sessionKey);
+        await DestroyInteractiveStateAsync(sessionKey);
+    }
+
+    private async Task DestroyInteractiveStateAsync(string sessionKey)
+    {
         if (_states.TryRemove(sessionKey, out var state))
         {
+            state.StopRequested = true;
             _logger.LogInformation("销毁会话状态: {SessionKey}", sessionKey);
             await state.AgentSession.DisposeAsync();
         }
+    }
+
+    private async Task InterruptOrDestroyStateAsync(string sessionKey)
+    {
+        if (!_states.TryGetValue(sessionKey, out var state))
+            return;
+
+        state.StopRequested = true;
+
+        try
+        {
+            if (await state.AgentSession.InterruptAsync(AgentInterruptTimeout, _cts.Token))
+            {
+                _logger.LogInformation("Agent 协议中断成功: sessionKey={SessionKey}", sessionKey);
+                return;
+            }
+
+            _logger.LogWarning("Agent 协议中断未确认，回退销毁会话: sessionKey={SessionKey}", sessionKey);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Agent 协议中断异常，回退销毁会话: sessionKey={SessionKey}", sessionKey);
+        }
+
+        await DestroyInteractiveStateAsync(sessionKey);
+    }
+
+    private Task InterruptActiveExecutionAsync(string sessionKey) => InterruptOrDestroyStateAsync(sessionKey);
+
+    private Task ExecuteTurnSnapshotAsync(TurnExecutionRequest request, CancellationToken ct)
+    {
+        var message = new Message
+        {
+            SessionKey = request.Snapshot.SessionKey,
+            From = request.Snapshot.From,
+            FromName = request.Snapshot.FromName,
+            Content = request.Snapshot.PromptText,
+            Attachments = request.Snapshot.Attachments,
+            ReplyContext = request.Snapshot.ReplyContext,
+            IsGroup = request.Snapshot.IsGroup,
+        };
+
+        return ProcessMessageAsync(request.Platform, message, request.Session, request.UseSelectedAgentForStartup, ct);
     }
 
     // ─── 会话状态管理 ────────────────────────────────────────────
