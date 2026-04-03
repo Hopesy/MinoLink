@@ -1317,14 +1317,7 @@ public sealed class Engine : IAsyncDisposable
         {
             if (await state.AgentSession.InterruptAsync(AgentInterruptTimeout, _cts.Token))
             {
-                // 协议中断成功，drain 残留事件防止下次 turn 读到脏数据
-                var drained = 0;
-                while (state.AgentSession.Events.TryRead(out _))
-                    drained++;
-                if (drained > 0)
-                    _logger.LogInformation("已清理中断后残留事件: sessionKey={SessionKey}, count={Count}", sessionKey, drained);
-
-                _logger.LogInformation("Agent 协议中断成功: sessionKey={SessionKey}", sessionKey);
+                _logger.LogInformation("Agent 协议中断成功，保留当前会话: sessionKey={SessionKey}", sessionKey);
                 return;
             }
 

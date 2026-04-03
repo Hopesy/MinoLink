@@ -118,6 +118,32 @@ public sealed class TurnMergeBehaviorTests
     }
 
     [Fact]
+    public async Task RunningTurn_WhenSupplementArrives_ShouldKeepCurrentSessionAfterInterrupt()
+    {
+        await using var context = await TestEngineContext.CreateAsync(
+            options: new TurnMergeOptions
+            {
+                InitialMergeWindow = TimeSpan.FromMilliseconds(200),
+                RestartDebounceWindow = TimeSpan.FromMilliseconds(120),
+            },
+            blockFirstSendUntilCancelled: true);
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "帮我看下这个报错");
+        await context.WaitForAsync(() => context.ClaudeAgent.SendCalls.Count == 1);
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "是在 docker 里");
+
+        await context.WaitForAsync(() => context.ClaudeAgent.InterruptCallCount == 1, timeoutMs: 3000);
+        await context.WaitForAsync(() => context.ClaudeAgent.SessionDisposeCount == 0, timeoutMs: 3000);
+        await context.WaitForAsync(() => context.ClaudeAgent.SendCalls.Count == 2, timeoutMs: 4000);
+
+        Assert.Equal(0, context.ClaudeAgent.SessionDisposeCount);
+        Assert.Equal(
+            "用户当前请求：\n帮我看下这个报错\n\n补充信息：\n- 是在 docker 里",
+            context.ClaudeAgent.SendCalls[1].Content);
+    }
+
+    [Fact]
     public async Task RunningTurn_WhenProtocolInterruptFails_ShouldFallbackToDisposeBeforeRerun()
     {
         await using var context = await TestEngineContext.CreateAsync(
@@ -159,6 +185,34 @@ public sealed class TurnMergeBehaviorTests
         await Task.Delay(700);
 
         Assert.Empty(context.ClaudeAgent.SendCalls);
+    }
+
+    [Fact]
+    public async Task StopCommand_DuringRunningTurn_ShouldInterruptWithoutDisposingSession()
+    {
+        await using var context = await TestEngineContext.CreateAsync(
+            options: new TurnMergeOptions
+            {
+                InitialMergeWindow = TimeSpan.FromMilliseconds(80),
+                RestartDebounceWindow = TimeSpan.FromMilliseconds(120),
+            },
+            blockFirstSendUntilCancelled: true);
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "帮我看下这个报错");
+        await context.WaitForAsync(() => context.ClaudeAgent.SendCalls.Count == 1, timeoutMs: 3000);
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "/stop");
+
+        await context.WaitForAsync(() => context.ClaudeAgent.InterruptCallCount == 1, timeoutMs: 3000);
+        await context.WaitForAsync(() => context.ClaudeAgent.CancelledCalls.Count == 1, timeoutMs: 3000);
+        await context.WaitForAsync(() => context.ClaudeAgent.SessionDisposeCount == 0, timeoutMs: 3000);
+
+        Assert.Contains(context.Platform.Replies, reply => reply.Contains("已停止当前回复"));
+        Assert.Equal(0, context.ClaudeAgent.SessionDisposeCount);
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "继续分析");
+        await context.WaitForAsync(() => context.ClaudeAgent.SendCalls.Count == 2, timeoutMs: 3000);
+        Assert.Equal("用户当前请求：\n继续分析", context.ClaudeAgent.SendCalls[1].Content);
     }
 
     [Fact]
@@ -435,6 +489,7 @@ public sealed class TurnMergeBehaviorTests
     {
         private readonly Channel<AgentEvent> _events = Channel.CreateUnbounded<AgentEvent>();
         private readonly TaskCompletionSource<PermissionResponse> _responseTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private CancellationTokenSource? _activeSendCts;
 
         public string SessionId { get; } = $"{agentName}-session";
         public ChannelReader<AgentEvent> Events => _events.Reader;
@@ -446,14 +501,20 @@ public sealed class TurnMergeBehaviorTests
 
             if (blockFirstSendUntilCancelled && sequence == 1)
             {
+                _activeSendCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, _activeSendCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
                     owner.CancelledCalls.Add(content);
                     throw;
+                }
+                finally
+                {
+                    _activeSendCts.Dispose();
+                    _activeSendCts = null;
                 }
             }
 
@@ -524,6 +585,8 @@ public sealed class TurnMergeBehaviorTests
         public Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default)
         {
             owner.RecordInterrupt();
+            if (interruptSucceeds)
+                _activeSendCts?.Cancel();
             return Task.FromResult(interruptSucceeds);
         }
 
