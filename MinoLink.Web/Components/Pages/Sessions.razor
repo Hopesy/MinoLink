@@ -1,8 +1,10 @@
 @page "/sessions"
 @using MinoLink.Core
 @using MinoLink.Core.Models
+@using MinoLink.Core.Services
 @inject Engine Engine
 @inject SessionManager SessionManager
+@inject NativeSessionCatalogService SessionCatalog
 @implements IDisposable
 
 <div class="page-header" style="margin-bottom:24px">
@@ -27,7 +29,7 @@
     }
 </div>
 <div class="sessions-filter-bar">
-    <button class="btn-small" @onclick="Refresh">↻ 刷新</button>
+    <button class="btn-small" @onclick="RefreshAsync" disabled="@_isLoadingProjects">@( _isLoadingProjects ? "加载中..." : "↻ 刷新")</button>
     <div class="sessions-agent-toggle">
         <button class="@(GetToggleClass(null))" @onclick="@(() => SetAgentFilter(null))">全部</button>
         <button class="@(GetToggleClass("claudecode"))" @onclick="@(() => SetAgentFilter("claudecode"))">Claude</button>
@@ -36,7 +38,21 @@
     <span class="filter-info">@_visibleProjects.Count 个卡片 · @_visibleProjects.Sum(p => p.Sessions.Count) 个会话</span>
 </div>
 
-@if (_visibleProjects.Count == 0)
+@if (_isLoadingProjects && _visibleProjects.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">&#9203;</div>
+        <p>正在加载历史会话记录…</p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(_projectsLoadError) && _visibleProjects.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">&#9888;</div>
+        <p>加载历史会话失败：@_projectsLoadError</p>
+    </div>
+}
+else if (_visibleProjects.Count == 0)
 {
     <div class="empty-state">
         <div class="empty-icon">&#128193;</div>
@@ -54,7 +70,7 @@ else
             var cardCls = "sg-card" + (activeRecord is not null ? " sg-card-live" : "");
             var arrowCls = "sg-arrow" + (isOpen ? " open" : "");
             <div class="@cardCls">
-                <div class="sg-header" @onclick="() => ToggleGroup(project.Key)">
+                <div class="sg-header" @onclick="() => ToggleGroupAsync(project)">
                     <div class="sg-header-main">
                         <div class="sg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg></div>
                         <div class="sg-path-wrap">
@@ -76,6 +92,18 @@ else
                 @if (isOpen)
                 {
                     <div class="sg-body">
+                        @if (project.IsLoadingDetails)
+                        {
+                            <div class="sc">
+                                <div class="sc-summary">正在加载该项目的历史摘要…</div>
+                            </div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(project.LoadError))
+                        {
+                            <div class="sc">
+                                <div class="sc-summary">@project.LoadError</div>
+                            </div>
+                        }
                         @foreach (var s in project.Sessions)
                         {
                             var isActive = activeRecord?.AgentSessionId == s.SessionId;
@@ -85,7 +113,7 @@ else
                                     <span class="sc-time">@s.LastActive.ToString("MM-dd HH:mm")</span>
                                     @if (isActive) { <span class="sc-badge">&#9654; 当前</span> }
                                 </div>
-                                <div class="sc-summary">@(string.IsNullOrWhiteSpace(s.Summary) ? "—" : s.Summary)</div>
+                                <div class="sc-summary">@GetSessionSummary(project, s)</div>
                             </div>
                         }
                     </div>
@@ -100,26 +128,131 @@ else
     private string? _agentFilter;
     private Dictionary<string, SessionRecord> _activeSessionMap = [];
     private HashSet<string> _expanded = [];
+    private bool _isLoadingProjects;
+    private string? _projectsLoadError;
+    private bool _disposed;
     private List<SessionProjectGroup> _visibleProjects => string.IsNullOrWhiteSpace(_agentFilter)
         ? _projects
         : _projects.Where(x => string.Equals(x.AgentType, _agentFilter, StringComparison.OrdinalIgnoreCase)).ToList();
 
-    protected override void OnInitialized() => LoadData();
-
-    private void LoadData()
+    protected override void OnInitialized()
     {
-        _projects =
-        [
-            .. ClaudeNativeSession.GetAllProjects()
-                .Select(project => new SessionProjectGroup(BuildGroupKey(project.WorkDir, "claudecode"), project.WorkDir, "claudecode", project.Sessions)),
-            .. CodexNativeSession.GetAllProjects()
-                .Select(project => new SessionProjectGroup(BuildGroupKey(project.WorkDir, "codex"), project.WorkDir, "codex", project.Sessions)),
-        ];
+        LoadActiveSessions();
 
-        _projects = _projects
-            .OrderByDescending(p => p.LastActive)
-            .ToList();
+        var cachedProjects = SessionCatalog.GetCachedProjects();
+        if (cachedProjects.Count > 0)
+            _projects = MergeProjects(cachedProjects);
 
+        _isLoadingProjects = true;
+        _ = LoadProjectsAsync(forceRefresh: cachedProjects.Count > 0);
+    }
+
+    private async Task LoadProjectsAsync(bool forceRefresh = false)
+    {
+        try
+        {
+            _projectsLoadError = null;
+            var projects = await SessionCatalog.GetProjectsAsync(forceRefresh);
+            if (_disposed)
+                return;
+
+            _projects = MergeProjects(projects);
+            LoadActiveSessions();
+        }
+        catch (Exception ex)
+        {
+            if (_disposed)
+                return;
+
+            _projectsLoadError = ex.Message;
+        }
+        finally
+        {
+            _isLoadingProjects = false;
+            if (!_disposed)
+                await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Task RefreshAsync()
+    {
+        if (_isLoadingProjects)
+            return Task.CompletedTask;
+
+        LoadActiveSessions();
+        _isLoadingProjects = true;
+        _projectsLoadError = null;
+        return LoadProjectsAsync(forceRefresh: true);
+    }
+
+    private void SetAgentFilter(string? agentType)
+    {
+        _agentFilter = agentType;
+    }
+
+    private Task ToggleGroupAsync(SessionProjectGroup project)
+    {
+        if (!_expanded.Add(project.Key))
+        {
+            _expanded.Remove(project.Key);
+            return Task.CompletedTask;
+        }
+
+        if (!project.SummariesLoaded && !project.IsLoadingDetails)
+            _ = LoadProjectDetailsAsync(project.Key, project.AgentType, project.WorkDir);
+
+        return Task.CompletedTask;
+    }
+
+    private async Task LoadProjectDetailsAsync(string groupKey, string agentType, string workDir)
+    {
+        var project = _projects.FirstOrDefault(x => string.Equals(x.Key, groupKey, StringComparison.OrdinalIgnoreCase));
+        if (project is null)
+            return;
+
+        project.IsLoadingDetails = true;
+        project.LoadError = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var sessions = await SessionCatalog.GetProjectSessionsAsync(agentType, workDir);
+            if (_disposed)
+                return;
+
+            project = _projects.FirstOrDefault(x => string.Equals(x.Key, groupKey, StringComparison.OrdinalIgnoreCase));
+            if (project is null)
+                return;
+
+            project.Sessions = sessions.OrderByDescending(x => x.LastActive).ToList();
+            project.SummariesLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            if (_disposed)
+                return;
+
+            project = _projects.FirstOrDefault(x => string.Equals(x.Key, groupKey, StringComparison.OrdinalIgnoreCase));
+            if (project is null)
+                return;
+
+            project.LoadError = $"加载摘要失败：{ex.Message}";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                project = _projects.FirstOrDefault(x => string.Equals(x.Key, groupKey, StringComparison.OrdinalIgnoreCase));
+                if (project is not null)
+                    project.IsLoadingDetails = false;
+
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private void LoadActiveSessions()
+    {
         _activeSessionMap = Engine.GetActiveStatuses()
             .Select(status => SessionManager.GetActive(status.SessionKey))
             .Where(record => record?.ProjectKey is not null)
@@ -128,16 +261,35 @@ else
             .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LastActiveAt).First(), StringComparer.OrdinalIgnoreCase);
     }
 
-    private void Refresh() { LoadData(); StateHasChanged(); }
-
-    private void SetAgentFilter(string? agentType)
+    private List<SessionProjectGroup> MergeProjects(IReadOnlyList<NativeProjectCatalogItem> projects)
     {
-        _agentFilter = agentType;
-    }
+        var existing = _projects.ToDictionary(x => x.Key, StringComparer.OrdinalIgnoreCase);
 
-    private void ToggleGroup(string groupKey)
-    {
-        if (!_expanded.Add(groupKey)) _expanded.Remove(groupKey);
+        return projects
+            .Select(project =>
+            {
+                var key = BuildGroupKey(project.WorkDir, project.AgentType);
+                var canReuseSummaries =
+                    existing.TryGetValue(key, out var current)
+                    && current.SummariesLoaded
+                    && current.Sessions.Select(x => x.SessionId)
+                        .SequenceEqual(project.Sessions.Select(x => x.SessionId), StringComparer.OrdinalIgnoreCase);
+
+                return new SessionProjectGroup
+                {
+                    Key = key,
+                    WorkDir = project.WorkDir,
+                    AgentType = project.AgentType,
+                    Sessions = canReuseSummaries && current is not null
+                        ? current.Sessions
+                        : project.Sessions,
+                    SummariesLoaded = canReuseSummaries && current is not null && current.SummariesLoaded,
+                    IsLoadingDetails = current?.IsLoadingDetails ?? false,
+                    LoadError = current?.LoadError,
+                };
+            })
+            .OrderByDescending(project => project.LastActive)
+            .ToList();
     }
 
     private static string BuildGroupKey(string workDir, string? agentType)
@@ -160,6 +312,14 @@ else
         _ => "Claude",
     };
 
+    private static string GetSessionSummary(SessionProjectGroup project, NativeSessionInfo session)
+    {
+        if (project.IsLoadingDetails && !project.SummariesLoaded && string.IsNullOrWhiteSpace(session.Summary))
+            return "正在加载摘要...";
+
+        return string.IsNullOrWhiteSpace(session.Summary) ? "—" : session.Summary;
+    }
+
     private string GetToggleClass(string? agentType)
     {
         var isActive = string.Equals(_agentFilter, agentType, StringComparison.OrdinalIgnoreCase)
@@ -173,14 +333,20 @@ else
         _ => "sg-agent sg-agent-claude",
     };
 
-    private sealed record SessionProjectGroup(
-        string Key,
-        string WorkDir,
-        string AgentType,
-        List<NativeSessionInfo> Sessions)
+    private sealed class SessionProjectGroup
     {
+        public required string Key { get; init; }
+        public required string WorkDir { get; init; }
+        public required string AgentType { get; init; }
+        public required List<NativeSessionInfo> Sessions { get; set; }
+        public bool SummariesLoaded { get; set; }
+        public bool IsLoadingDetails { get; set; }
+        public string? LoadError { get; set; }
         public DateTime LastActive => Sessions.Count > 0 ? Sessions[0].LastActive : DateTime.MinValue;
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _disposed = true;
+    }
 }

@@ -6,6 +6,7 @@ using MinoLink.Codex;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
+using MinoLink.Core.Services;
 using MinoLink.Feishu;
 using MinoLink.Logging;
 using MinoLink.Services;
@@ -60,6 +61,11 @@ builder.Services.AddSingleton<Func<string, IAgent>>(sp => agentType =>
 // 注册 SessionManager
 var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
 builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
+builder.Services.AddSingleton(new NativeSessionCatalogService(
+[
+    new ClaudeNativeSessionProjectSource(),
+    new CodexNativeSessionProjectSource(),
+]));
 
 // 注册 Engine
 builder.Services.AddSingleton<Engine>(sp =>

@@ -33,7 +33,7 @@ public static class ClaudeNativeSession
     /// <summary>
     /// 获取指定工作目录下的所有 Claude Code 原生会话，按最后修改时间倒序。
     /// </summary>
-    public static List<NativeSessionInfo> GetSessions(string workDir)
+    public static List<NativeSessionInfo> GetSessions(string workDir, bool includeSummaries = true)
     {
         var projectDirName = EncodeProjectDir(workDir);
         var claudeProjectsDir = Path.Combine(
@@ -43,13 +43,13 @@ public static class ClaudeNativeSession
         if (!Directory.Exists(claudeProjectsDir))
             return [];
 
-        return LoadSessionsFromDir(claudeProjectsDir, workDir);
+        return LoadSessionsFromDir(claudeProjectsDir, workDir, includeSummaries);
     }
 
     /// <summary>
     /// 获取所有 Claude Code 项目及其会话，按最后活跃时间倒序。
     /// </summary>
-    public static List<NativeProjectInfo> GetAllProjects()
+    public static List<NativeProjectInfo> GetAllProjects(bool includeSummaries = true)
     {
         var claudeProjectsRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -63,7 +63,7 @@ public static class ClaudeNativeSession
         {
             var encoded = Path.GetFileName(dir);
             var workDir = DecodeProjectDir(encoded);
-            var sessions = LoadSessionsFromDir(dir, workDir);
+            var sessions = LoadSessionsFromDir(dir, workDir, includeSummaries);
             if (sessions.Count == 0) continue;
             results.Add(new NativeProjectInfo(workDir, encoded, sessions));
         }
@@ -72,14 +72,14 @@ public static class ClaudeNativeSession
         return results;
     }
 
-    private static List<NativeSessionInfo> LoadSessionsFromDir(string dir, string workDir)
+    private static List<NativeSessionInfo> LoadSessionsFromDir(string dir, string workDir, bool includeSummaries)
     {
         var results = new List<NativeSessionInfo>();
         foreach (var file in Directory.GetFiles(dir, "*.jsonl"))
         {
             var sessionId = Path.GetFileNameWithoutExtension(file);
             var mtime = File.GetLastWriteTime(file);
-            var summary = ReadFirstUserMessage(file);
+            var summary = includeSummaries ? ReadFirstUserMessage(file) : string.Empty;
             results.Add(new NativeSessionInfo(sessionId, workDir, mtime, summary));
         }
         results.Sort((a, b) => b.LastActive.CompareTo(a.LastActive));

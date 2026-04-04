@@ -7,25 +7,25 @@ namespace MinoLink.Core;
 /// </summary>
 public static class CodexNativeSession
 {
-    public static List<NativeSessionInfo> GetSessions(string workDir)
+    public static List<NativeSessionInfo> GetSessions(string workDir, bool includeSummaries = true)
     {
         var normalizedWorkDir = NormalizeWorkDir(workDir);
-        return LoadAllSessions()
+        return LoadAllSessions(includeSummaries)
             .Where(x => string.Equals(NormalizeWorkDir(x.WorkDir), normalizedWorkDir, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(x => x.LastActive)
             .ToList();
     }
 
-    public static List<NativeProjectInfo> GetAllProjects()
+    public static List<NativeProjectInfo> GetAllProjects(bool includeSummaries = true)
     {
-        return LoadAllSessions()
+        return LoadAllSessions(includeSummaries)
             .GroupBy(x => x.WorkDir, StringComparer.OrdinalIgnoreCase)
             .Select(g => new NativeProjectInfo(g.Key, g.Key, g.OrderByDescending(x => x.LastActive).ToList()))
             .OrderByDescending(x => x.LastActive)
             .ToList();
     }
 
-    private static List<NativeSessionInfo> LoadAllSessions()
+    private static List<NativeSessionInfo> LoadAllSessions(bool includeSummaries)
     {
         var sessionsRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -40,7 +40,7 @@ public static class CodexNativeSession
             if (!TryReadSessionMeta(file, out var sessionId, out var sessionWorkDir, out var lastActive))
                 continue;
 
-            var summary = ReadFirstUserMessage(file);
+            var summary = includeSummaries ? ReadFirstUserMessage(file) : string.Empty;
             results.Add(new NativeSessionInfo(sessionId, sessionWorkDir, lastActive, summary));
         }
 
