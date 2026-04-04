@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MinoLink.Core\MinoLink.Core.csproj" />
+    <ProjectReference Include="..\MinoLink.ClaudeCode\MinoLink.ClaudeCode.csproj" />
     <ProjectReference Include="..\MinoLink.Feishu\MinoLink.Feishu.csproj" />
   </ItemGroup>
 

@@ -30,6 +30,7 @@ public sealed class ClaudeSession : IAgentSession
     private string _sessionId;
     private readonly bool _useContinue;
     private readonly TaskCompletionSource<string> _sessionIdReady = new();
+    private volatile bool _suppressNextInterruptedResult;
 
     public string SessionId => _sessionId;
     public ChannelReader<AgentEvent> Events => _eventChannel.Reader;
@@ -235,6 +236,9 @@ public sealed class ClaudeSession : IAgentSession
                         case "system":
                             HandleSystem(root);
                             break;
+                        case "user":
+                            HandleUser(root);
+                            break;
                         case "assistant":
                             await HandleAssistantAsync(root, writer);
                             break;
@@ -270,6 +274,8 @@ public sealed class ClaudeSession : IAgentSession
 
     private void HandleSystem(JsonElement root)
     {
+        ClearInterruptedResultSuppression("system");
+
         if (root.TryGetProperty("session_id", out var sid))
         {
             var id = sid.GetString();
@@ -284,6 +290,8 @@ public sealed class ClaudeSession : IAgentSession
 
     private async Task HandleAssistantAsync(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
+        ClearInterruptedResultSuppression("assistant");
+
         if (!root.TryGetProperty("message", out var msg)) return;
         if (!msg.TryGetProperty("content", out var contentArr)) return;
 
@@ -331,11 +339,33 @@ public sealed class ClaudeSession : IAgentSession
     private async Task HandleResultAsync(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
         var content = root.TryGetProperty("result", out var result) ? result.GetString() ?? "" : "";
+        var subtype = root.TryGetProperty("subtype", out var subtypeEl) ? subtypeEl.GetString() : null;
+        var stopReason = root.TryGetProperty("stop_reason", out var stopReasonEl) ? stopReasonEl.GetString() : null;
+        var isError = root.TryGetProperty("is_error", out var isErrorEl) &&
+                      isErrorEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                      isErrorEl.GetBoolean();
 
         if (root.TryGetProperty("session_id", out var sid))
         {
             var id = sid.GetString();
             if (!string.IsNullOrEmpty(id)) _sessionId = id;
+        }
+
+        if (ShouldSuppressInterruptedResult())
+        {
+            _logger.LogInformation(
+                "Claude interrupted turn 的残留 result 已忽略: subtype={Subtype}, stopReason={StopReason}, contentLength={ContentLength}",
+                subtype ?? "<null>",
+                stopReason ?? "<null>",
+                content.Length);
+            return;
+        }
+
+        if (isError || !string.Equals(subtype, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            var errorText = ExtractClaudeResultError(root, subtype, content, stopReason);
+            await writer.WriteAsync(new AgentEvent { Type = AgentEventType.Error, Content = errorText });
+            return;
         }
 
         await writer.WriteAsync(new AgentEvent { Type = AgentEventType.Result, Content = content });
@@ -358,6 +388,7 @@ public sealed class ClaudeSession : IAgentSession
         if (string.Equals(subtype, "success", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation("Claude interrupt 已确认: requestId={RequestId}", requestId);
+            _suppressNextInterruptedResult = true;
             completion.TrySetResult(true);
             return;
         }
@@ -370,6 +401,8 @@ public sealed class ClaudeSession : IAgentSession
 
     private async Task HandleControlRequestAsync(JsonElement root, ChannelWriter<AgentEvent> writer)
     {
+        ClearInterruptedResultSuppression("control_request");
+
         var requestId = root.TryGetProperty("request_id", out var rid) ? rid.GetString() ?? "" : "";
         if (!root.TryGetProperty("request", out var request)) return;
 
@@ -411,6 +444,59 @@ public sealed class ClaudeSession : IAgentSession
             ToolInput = inputSummary,
             ToolInputRaw = DeserializeInput(request),
         });
+    }
+
+    private void HandleUser(JsonElement root)
+    {
+        if (_suppressNextInterruptedResult)
+        {
+            var parentToolUseId = root.TryGetProperty("parent_tool_use_id", out var parentToolUseIdEl)
+                ? parentToolUseIdEl.GetString()
+                : null;
+            _logger.LogInformation("Claude interrupted turn 的残留 user 事件已忽略: parent_tool_use_id={ParentToolUseId}",
+                parentToolUseId ?? "<null>");
+        }
+    }
+
+    private void ClearInterruptedResultSuppression(string reason)
+    {
+        if (!_suppressNextInterruptedResult)
+            return;
+
+        _logger.LogDebug("Claude interrupt result 抑制已清除: reason={Reason}", reason);
+        _suppressNextInterruptedResult = false;
+    }
+
+    private bool ShouldSuppressInterruptedResult()
+    {
+        if (!_suppressNextInterruptedResult)
+            return false;
+
+        _suppressNextInterruptedResult = false;
+        return true;
+    }
+
+    private static string ExtractClaudeResultError(JsonElement root, string? subtype, string content, string? stopReason)
+    {
+        if (root.TryGetProperty("errors", out var errorsEl) && errorsEl.ValueKind == JsonValueKind.Array)
+        {
+            var errors = errorsEl.EnumerateArray()
+                .Select(static item => item.GetString())
+                .Where(static item => !string.IsNullOrWhiteSpace(item))
+                .ToArray();
+            if (errors.Length > 0)
+                return string.Join("; ", errors!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(content))
+            return content;
+
+        if (!string.IsNullOrWhiteSpace(stopReason))
+            return stopReason;
+
+        return string.IsNullOrWhiteSpace(subtype)
+            ? "Claude 执行失败"
+            : $"Claude 执行失败: {subtype}";
     }
 
     private static string SummarizeToolInput(string toolName, JsonElement element)
