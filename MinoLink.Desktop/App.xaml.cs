@@ -29,6 +29,10 @@ public partial class App : System.Windows.Application
     private IHost? _host;
     private WinForms.NotifyIcon? _notifyIcon;
     private bool _isExiting;
+    private bool _ownsSingleInstanceMutex;
+    private bool _restartRequested;
+    private string? _restartProcessPath;
+    private int _uiShutdownPrepared;
     private MenuItem? _autoStartMenuItem;
     private ContextMenu? _trayContextMenu;
 
@@ -48,6 +52,7 @@ public partial class App : System.Windows.Application
             Shutdown(0);
             return;
         }
+        _ownsSingleInstanceMutex = true;
 
         // 注册进程退出兜底清理（覆盖强杀、系统关机等 OnExit 不触发的场景）
         AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupSync();
@@ -93,15 +98,17 @@ public partial class App : System.Windows.Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        _notifyIcon?.Dispose();
+        PrepareUiForShutdown();
 
         if (_host is not null)
         {
             await _host.StopAsync();
             _host.Dispose();
+            _host = null;
         }
 
-        SingleInstanceMutex.ReleaseMutex();
+        ReleaseSingleInstanceMutex();
+        StartRestartProcessIfRequested();
 
         base.OnExit(e);
     }
@@ -109,9 +116,11 @@ public partial class App : System.Windows.Application
     /// <summary>同步清理兜底：ProcessExit 不支持 async，尽力释放关键资源。</summary>
     private void CleanupSync()
     {
-        try { _notifyIcon?.Dispose(); } catch { /* ignore */ }
+        PrepareUiForShutdown();
         try { _host?.StopAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { _host?.Dispose(); } catch { /* ignore */ }
+        _host = null;
+        ReleaseSingleInstanceMutex();
     }
 
     private IHost BuildHost()
@@ -229,6 +238,62 @@ public partial class App : System.Windows.Application
             if (args.Button == WinForms.MouseButtons.Right)
                 ShowTrayContextMenu();
         };
+    }
+
+    private void PrepareUiForShutdown()
+    {
+        if (Interlocked.Exchange(ref _uiShutdownPrepared, 1) == 1)
+            return;
+
+        try
+        {
+            _trayContextMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+            _trayContextMenu = null;
+            _autoStartMenuItem = null;
+
+            if (_notifyIcon is not null)
+            {
+                _notifyIcon.Visible = false;
+                _notifyIcon.Dispose();
+                _notifyIcon = null;
+            }
+        }
+        catch
+        {
+            // ignore cleanup exceptions during shutdown
+        }
+    }
+
+    private void ReleaseSingleInstanceMutex()
+    {
+        if (_ownsSingleInstanceMutex)
+        {
+            try
+            {
+                SingleInstanceMutex.ReleaseMutex();
+            }
+            catch
+            {
+                // ignore release failures during shutdown
+            }
+            finally
+            {
+                _ownsSingleInstanceMutex = false;
+            }
+        }
+    }
+
+    private void StartRestartProcessIfRequested()
+    {
+        if (!_restartRequested || string.IsNullOrWhiteSpace(_restartProcessPath))
+            return;
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = _restartProcessPath,
+            UseShellExecute = true,
+            WorkingDirectory = AppContext.BaseDirectory,
+        });
     }
 
     private void ShowTrayContextMenu()
@@ -458,13 +523,8 @@ public partial class App : System.Windows.Application
         if (string.IsNullOrWhiteSpace(processPath))
             return;
 
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = processPath,
-            UseShellExecute = true,
-            WorkingDirectory = AppContext.BaseDirectory,
-        });
-
+        _restartRequested = true;
+        _restartProcessPath = processPath;
         _isExiting = true;
         Shutdown();
     }
