@@ -340,6 +340,7 @@ public partial class App : System.Windows.Application
             Header = "开机自启",
             IsCheckable = true,
             IsChecked = isAutoStart,
+            IsEnabled = AutoStartHelper.CanPersistAutoStart,
         };
         _autoStartMenuItem.Click += (_, _) =>
         {

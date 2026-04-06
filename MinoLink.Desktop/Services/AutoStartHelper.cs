@@ -11,6 +11,18 @@ public sealed class AutoStartHelper : IAutoStartService
     /// <summary>当自启状态变化时触发，用于跨组件联动。</summary>
     public event Action? Changed;
 
+    public static bool CanPersistAutoStart
+    {
+        get
+        {
+#if DEBUG
+            return false;
+#else
+            return true;
+#endif
+        }
+    }
+
     public bool IsAutoStartEnabled() => IsEnabled();
 
     public void SetAutoStart(bool enabled)
@@ -27,6 +39,9 @@ public sealed class AutoStartHelper : IAutoStartService
 
     public static void SetEnabled(bool enabled)
     {
+        if (!CanPersistAutoStart)
+            throw new InvalidOperationException("Debug 构建禁止修改开机自启注册表。");
+
         using var key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
         if (key is null) return;
 
