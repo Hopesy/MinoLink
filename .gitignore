@@ -372,3 +372,5 @@ FodyWeavers.xsd
 
 # Installer output
 MinoLink.Installer/output/
+# Local .NET CLI home
+.dotnet/
