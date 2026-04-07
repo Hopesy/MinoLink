@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -94,6 +96,8 @@ public sealed class Engine : IAsyncDisposable
         if (await TryHandlePendingPermissionTextAsync(platform, msg))
             return;
 
+        msg = NormalizeFileCommand(msg);
+
         // 命令拦截（在锁之前）
         if (msg.Content.StartsWith('/') && await TryHandleCommandAsync(platform, msg))
             return;
@@ -157,7 +161,7 @@ public sealed class Engine : IAsyncDisposable
             _logger.LogInformation("[{Platform}] 消息已发送，开始等待 Agent 事件流...", platform.Name);
 
             // 处理事件流
-            await ProcessEventsAsync(platform, msg.ReplyContext, state, executionCt);
+            await ProcessEventsAsync(platform, msg.ReplyContext, state, msg.ExpectFileOutput, session.ProjectKey ?? _defaultWorkDir, executionCt);
             _logger.LogInformation("[{Platform}] 事件流处理完毕", platform.Name);
         }
         catch (OperationCanceledException) when (executionCt.IsCancellationRequested)
@@ -175,10 +179,11 @@ public sealed class Engine : IAsyncDisposable
     }
 
     /// <summary>处理 Agent 事件流。</summary>
-    private async Task ProcessEventsAsync(IPlatform platform, object replyContext, InteractiveState state, CancellationToken ct)
+    private async Task ProcessEventsAsync(IPlatform platform, object replyContext, InteractiveState state, bool expectFileOutput, string workDir, CancellationToken ct)
     {
         var events = state.AgentSession.Events;
         var textBuffer = new System.Text.StringBuilder();
+        var fullTextBuffer = new System.Text.StringBuilder();
         var thinkingBuffer = new System.Text.StringBuilder();
         var allowThinkingMessages = ShouldEmitThinking();
 
@@ -249,7 +254,8 @@ public sealed class Engine : IAsyncDisposable
 
                     case AgentEventType.Text:
                         await FlushThinkingAsync();
-                        AppendMarkdownChunk(textBuffer, evt.Content);
+                        AppendMarkdownChunk(textBuffer, RemoveFilesBlock(evt.Content));
+                        AppendMarkdownChunk(fullTextBuffer, evt.Content);
                         // 流式预览：节流更新
                         if (updater is not null && (DateTimeOffset.UtcNow - lastPreviewAt).TotalMilliseconds > 1500)
                         {
@@ -296,21 +302,23 @@ public sealed class Engine : IAsyncDisposable
                         if (state.StopRequested)
                             return;
                         await FlushThinkingAsync();
+                        var resultText = evt.Content ?? string.Empty;
+                        var fullAgentOutput = ComposeFullAgentOutput(fullTextBuffer.ToString(), resultText);
+                        var visibleResultText = RemoveFilesBlock(resultText);
                         var flushedText = textBuffer.Length > 0;
                         await FlushTextAsync(normalizeFinalSummary: true);
-                        var resultText = evt.Content;
                         if (previewHandle is not null && updater is not null)
                         {
-                            var previewResult = string.IsNullOrWhiteSpace(resultText)
-                                ? "" : resultText;
+                            var previewResult = string.IsNullOrWhiteSpace(visibleResultText)
+                                ? "" : visibleResultText;
                             await updater.UpdateMessageAsync(previewHandle,
                                 BuildCompletedStatusMessage(Truncate(previewResult, 4000), success: true), ct);
                             previewHandle = null;
                         }
-                        else if (!flushedText && !string.IsNullOrWhiteSpace(resultText))
+                        else if (!flushedText && !string.IsNullOrWhiteSpace(visibleResultText))
                         {
                             // textBuffer 没有被 flush 过（没有中间文本），直接发 result 内容
-                            var finalText = BuildCompletedStatusMessage(Truncate(resultText, 4000), success: true);
+                            var finalText = BuildCompletedStatusMessage(Truncate(visibleResultText, 4000), success: true);
                             foreach (var chunk in SplitMessage(finalText, 4000))
                                 await platform.ReplyAsync(replyContext, chunk, ct);
                         }
@@ -320,6 +328,9 @@ public sealed class Engine : IAsyncDisposable
                             await platform.ReplyAsync(replyContext,
                                 BuildCompletedStatusMessage("", success: true), ct);
                         }
+
+                        if (expectFileOutput)
+                            await SendFileOutputsAsync(platform, replyContext, workDir, fullAgentOutput, ct);
                         return;
 
                     case AgentEventType.Error:
@@ -796,6 +807,12 @@ public sealed class Engine : IAsyncDisposable
         ["acceptEdits"] = "自动接受编辑",
         ["plan"] = "规划模式 (只读)",
         ["bypassPermissions"] = "自动批准 (yolo)",
+    };
+
+    private static readonly Regex FilesBlockRegex = new(@"\[FILES\]\s*(?<paths>[\s\S]*?)\s*\[/FILES\]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"
     };
 
     /// <summary>尝试处理 / 命令，返回 true 表示已处理。</summary>
@@ -1281,6 +1298,10 @@ public sealed class Engine : IAsyncDisposable
                    `/project [路径]` - 查看/切换工作目录
                    `/snap` - 截取当前活动窗口并发送
                    `/mode [模式]` - 查看/切换权限模式
+                   `/file <要求>` - 要求 Agent 产出文件并在回复末尾回传路径
+                     - 默认要求所有产物写到 `output/`（子目录也必须在 `output/` 下）
+                     - 回复末尾需输出 `[FILES] ... [/FILES]` 区块，可写单文件、多文件或 `output/dir/` 目录
+                     - Engine 会自动隐藏该区块并在完成后发送图片/文件
                    `/help` - 显示此帮助
 
                    其他 `/` 开头的消息将直接转发给 Agent。
@@ -1345,6 +1366,7 @@ public sealed class Engine : IAsyncDisposable
             From = request.Snapshot.From,
             FromName = request.Snapshot.FromName,
             Content = request.Snapshot.PromptText,
+            ExpectFileOutput = request.Snapshot.ExpectFileOutput,
             Attachments = request.Snapshot.Attachments,
             ReplyContext = request.Snapshot.ReplyContext,
             IsGroup = request.Snapshot.IsGroup,
@@ -1616,6 +1638,206 @@ public sealed class Engine : IAsyncDisposable
             error = ex.Message;
             return false;
         }
+    }
+
+    private static Message NormalizeFileCommand(Message msg)
+    {
+        var trimmed = msg.Content.TrimStart();
+        if (!trimmed.StartsWith("/file", StringComparison.OrdinalIgnoreCase))
+            return msg;
+
+        var payload = trimmed.Length > 5 ? trimmed[5..].TrimStart() : string.Empty;
+        if (string.IsNullOrWhiteSpace(payload))
+            payload = "请生成用户需要的文件，并按要求返回文件路径。";
+
+        return new Message
+        {
+            SessionKey = msg.SessionKey,
+            From = msg.From,
+            FromName = msg.FromName,
+            Content = BuildFileOutputPrompt(payload),
+            ExpectFileOutput = true,
+            Attachments = msg.Attachments,
+            ReplyContext = msg.ReplyContext,
+            IsGroup = msg.IsGroup,
+            ReceivedAt = msg.ReceivedAt,
+        };
+    }
+
+    private static string BuildFileOutputPrompt(string payload)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(payload.Trim());
+        builder.AppendLine();
+        builder.AppendLine("补充要求：");
+        builder.AppendLine("- 本轮需要产出文件。所有产物默认写到 output/ 目录；如需子目录，也必须放在 output/ 下。");
+        builder.AppendLine("- 文件生成完成后，请在回复末尾输出一个固定区块。");
+        builder.AppendLine("- 格式严格如下：");
+        builder.AppendLine();
+        builder.AppendLine("[FILES]");
+        builder.AppendLine("output/example.ext");
+        builder.AppendLine("output/subdir/");
+        builder.AppendLine("[/FILES]");
+        builder.AppendLine();
+        builder.AppendLine("- 只填写真实已生成的文件路径。每行一个路径。");
+        builder.AppendLine("- 不要在其他正文位置混杂文件路径说明。");
+        return builder.ToString().TrimEnd();
+    }
+
+    private async Task SendFileOutputsAsync(IPlatform platform, object replyContext, string workDir, string resultText, CancellationToken ct)
+    {
+        var extraction = ExtractFileOutputPaths(workDir, resultText);
+        if (extraction.ValidPaths.Count == 0)
+        {
+            await platform.ReplyAsync(replyContext, extraction.HasFilesBlock
+                ? "⚠️ 检测到了 [FILES] 区块，但未找到可发送的有效文件路径。"
+                : "⚠️ 未检测到有效的 [FILES] 区块，请在回复末尾按协议返回文件路径。", ct);
+        }
+
+        if (extraction.InvalidEntries.Count > 0)
+        {
+            var invalidSummary = string.Join("\n", extraction.InvalidEntries.Select(item => $"- {item}"));
+            await platform.ReplyAsync(replyContext, $"⚠️ 以下文件未发送：\n{invalidSummary}", ct);
+        }
+
+        var sentFiles = 0;
+        var sentImages = 0;
+        foreach (var filePath in extraction.ValidPaths)
+        {
+            try
+            {
+                if (ImageExtensions.Contains(Path.GetExtension(filePath)))
+                {
+                    if (platform is IImageSender imageSender)
+                    {
+                        await imageSender.SendImageAsync(replyContext, filePath, ct);
+                        sentImages++;
+                    }
+                    else
+                    {
+                        await platform.ReplyAsync(replyContext, $"当前平台 `{platform.Name}` 不支持发送图片：`{filePath}`", ct);
+                    }
+                }
+                else
+                {
+                    if (platform is IFileSender fileSender)
+                    {
+                        await fileSender.SendFileAsync(replyContext, filePath, ct);
+                        sentFiles++;
+                    }
+                    else
+                    {
+                        await platform.ReplyAsync(replyContext, $"当前平台 `{platform.Name}` 不支持发送文件：`{filePath}`", ct);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "发送 /file 产物失败: path={Path}", filePath);
+                await platform.ReplyAsync(replyContext, $"发送文件失败：`{filePath}` - {ex.Message}", ct);
+            }
+        }
+
+        if (sentFiles > 0 || sentImages > 0)
+        {
+            await platform.ReplyAsync(replyContext, $"📦 已发送 {sentFiles} 个文件，{sentImages} 张图片。", ct);
+        }
+    }
+
+    private static FileOutputExtractionResult ExtractFileOutputPaths(string workDir, string resultText)
+    {
+        if (string.IsNullOrWhiteSpace(resultText))
+            return new FileOutputExtractionResult(false, [], []);
+
+        var match = FilesBlockRegex.Match(resultText);
+        if (!match.Success)
+            return new FileOutputExtractionResult(false, [], []);
+
+        var allowedRoots = new[]
+        {
+            Path.GetFullPath(workDir),
+            Path.GetFullPath(Path.Combine(workDir, "output")),
+            Path.GetFullPath(Path.Combine(workDir, "output", "artifacts")),
+        }.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+        var results = new List<string>();
+        var invalidEntries = new List<string>();
+        foreach (var rawLine in match.Groups["paths"].Value.Replace("\r\n", "\n").Split('\n'))
+        {
+            var trimmed = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+                continue;
+
+            var candidate = Path.IsPathRooted(trimmed)
+                ? Path.GetFullPath(trimmed)
+                : Path.GetFullPath(Path.Combine(workDir, trimmed));
+
+            if (!allowedRoots.Any(root => candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase)))
+            {
+                invalidEntries.Add($"{trimmed} (超出允许目录)");
+                continue;
+            }
+
+            if (Directory.Exists(candidate))
+            {
+                foreach (var child in Directory.EnumerateFiles(candidate, "*", SearchOption.AllDirectories))
+                {
+                    var info = new FileInfo(child);
+                    if (info.Length > 30L * 1024 * 1024)
+                    {
+                        invalidEntries.Add($"{Path.GetRelativePath(workDir, child)} (超过 30 MB)");
+                        continue;
+                    }
+
+                    results.Add(Path.GetFullPath(child));
+                }
+                continue;
+            }
+
+            if (!File.Exists(candidate))
+            {
+                invalidEntries.Add($"{trimmed} (文件不存在)");
+                continue;
+            }
+
+            var fileInfo = new FileInfo(candidate);
+            if (fileInfo.Length > 30L * 1024 * 1024)
+            {
+                invalidEntries.Add($"{trimmed} (超过 30 MB)");
+                continue;
+            }
+
+            results.Add(candidate);
+        }
+
+        return new FileOutputExtractionResult(true, results.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), invalidEntries);
+    }
+
+    private static string RemoveFilesBlock(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        var stripped = FilesBlockRegex.Replace(text, string.Empty);
+        stripped = Regex.Replace(stripped, @"\n{3,}", "\n\n");
+        return stripped.Trim();
+    }
+
+    private static string ComposeFullAgentOutput(string streamedText, string resultText)
+    {
+        var streamed = streamedText?.Trim() ?? string.Empty;
+        var result = resultText?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(streamed))
+            return result;
+        if (string.IsNullOrWhiteSpace(result))
+            return streamed;
+        if (string.Equals(streamed, result, StringComparison.Ordinal))
+            return result;
+        if (streamed.Contains(result, StringComparison.Ordinal))
+            return streamed;
+        if (result.Contains(streamed, StringComparison.Ordinal))
+            return result;
+        return streamed + "\n\n" + result;
     }
 
     private static string BuildCompletedStatusMessage(string content, bool success)
@@ -1965,6 +2187,8 @@ public sealed class Engine : IAsyncDisposable
     }
 
     /// <summary>单个会话的交互状态。</summary>
+    private sealed record FileOutputExtractionResult(bool HasFilesBlock, IReadOnlyList<string> ValidPaths, IReadOnlyList<string> InvalidEntries);
+
     private sealed class InteractiveState(IAgentSession agentSession)
     {
         public IAgentSession AgentSession { get; } = agentSession;

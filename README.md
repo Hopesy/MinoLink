@@ -161,6 +161,7 @@ dotnet build MinoLink.Installer
 | `/current` | 查看当前会话信息 |
 | `/project [路径]` | 查看/切换当前会话的工作目录 |
 | `/mode [模式]` | 查看/切换权限模式 |
+| `/file <要求>` | 生成文件并在回复完成后自动回传飞书 |
 
 ### `/new` 与 `/project` 的区别
 
@@ -173,6 +174,47 @@ dotnet build MinoLink.Installer
   - 保留当前会话记录，但切换该会话绑定的工作目录
   - 会销毁当前 Claude 进程；下一条消息会在新目录重新启动 Claude
   - 适合“继续当前会话语义，但换一个目录工作”
+
+### `/file` 的用法
+
+- `/file <要求>` 会开启“文件输出模式”。
+- Engine 会自动把用户要求补成严格协议，要求 Agent：
+  - 所有产物默认写到 `output/` 目录
+  - 子目录也必须位于 `output/` 下
+  - 回复末尾输出固定区块：
+
+```text
+[FILES]
+output/report.pdf
+output/charts/
+[/FILES]
+```
+
+- `[FILES]` 区块支持：
+  - 单文件路径
+  - 多文件路径（每行一个）
+  - 目录路径（会递归展开并批量发送）
+- Engine 会自动：
+  - 隐藏 `[FILES]` 区块，不把它回显给飞书用户
+  - 校验路径是否位于工作目录 / `output/` / `output/artifacts/`
+  - 过滤不存在文件和超过 30 MB 的文件
+  - 去重后发送，并回一条发送摘要
+
+示例：
+
+```text
+/file 生成日报 PDF 和图表，放到 output/daily/ 目录
+```
+
+Agent 结束时返回：
+
+```text
+[FILES]
+output/daily/
+[/FILES]
+```
+
+随后 MinoLink 会把目录下的文件按规则发送到飞书。
 
 ### `/stop` 的行为
 

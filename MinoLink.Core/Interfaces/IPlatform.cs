@@ -60,6 +60,14 @@ public interface IImageSender
 }
 
 /// <summary>
+/// 支持发送本地文件。
+/// </summary>
+public interface IFileSender
+{
+    Task SendFileAsync(object replyContext, string filePath, CancellationToken ct);
+}
+
+/// <summary>
 /// 支持截取桌面图片。
 /// </summary>
 public interface IScreenshotService

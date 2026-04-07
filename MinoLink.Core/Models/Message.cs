@@ -17,6 +17,9 @@ public sealed class Message
     /// <summary>文本内容。</summary>
     public string Content { get; init; } = string.Empty;
 
+    /// <summary>是否要求本轮输出文件路径区块并在结束后回传文件。</summary>
+    public bool ExpectFileOutput { get; init; }
+
     /// <summary>统一附件列表。</summary>
     public IReadOnlyList<MessageAttachment> Attachments { get; init; } = [];
 

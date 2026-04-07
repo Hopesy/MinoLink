@@ -14,6 +14,7 @@ internal sealed class TurnAggregate
         FromName = firstMessage.FromName;
         ReplyContext = firstMessage.ReplyContext;
         IsGroup = firstMessage.IsGroup;
+        ExpectFileOutput = firstMessage.ExpectFileOutput;
         FirstMessageAt = firstMessage.ReceivedAt;
         LastMessageAt = firstMessage.ReceivedAt;
         Revision = 1;
@@ -29,6 +30,8 @@ internal sealed class TurnAggregate
     public object ReplyContext { get; private set; }
 
     public bool IsGroup { get; }
+
+    public bool ExpectFileOutput { get; private set; }
 
     public DateTimeOffset FirstMessageAt { get; }
 
@@ -52,6 +55,7 @@ internal sealed class TurnAggregate
             FromName,
             ReplyContext,
             IsGroup,
+            ExpectFileOutput,
             Revision,
             BuildPromptText(),
             _attachments.ToArray());
@@ -59,6 +63,8 @@ internal sealed class TurnAggregate
 
     private void AppendCore(Message message)
     {
+        ExpectFileOutput = ExpectFileOutput || message.ExpectFileOutput;
+
         if (!string.IsNullOrWhiteSpace(message.Content))
             _textParts.Add(message.Content.Trim());
 

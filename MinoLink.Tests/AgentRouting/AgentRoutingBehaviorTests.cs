@@ -160,6 +160,19 @@ public sealed class AgentRoutingBehaviorTests
     }
 
     [Fact]
+    public async Task HelpCommand_ShouldDescribeFileModeUsage()
+    {
+        await using var context = await TestEngineContext.CreateAsync();
+
+        await context.Platform.SendMessageAsync(context.SessionKey, "/help");
+
+        Assert.Contains(context.Platform.Replies, reply =>
+            reply.Contains("`/file <要求>`", StringComparison.Ordinal) &&
+            reply.Contains("output/", StringComparison.Ordinal) &&
+            reply.Contains("[FILES]", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ModeCommand_AcceptEditsForCodex_ShouldBeTreatedAsEquivalentToDefault()
     {
         await using var context = await TestEngineContext.CreateAsync();

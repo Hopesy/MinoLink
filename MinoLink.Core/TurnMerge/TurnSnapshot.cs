@@ -8,6 +8,7 @@ internal sealed record TurnSnapshot(
     string? FromName,
     object ReplyContext,
     bool IsGroup,
+    bool ExpectFileOutput,
     int Revision,
     string PromptText,
     IReadOnlyList<MessageAttachment> Attachments);

@@ -17,7 +17,7 @@ namespace MinoLink.Feishu;
 /// 飞书平台适配器。
 /// 通过 FeishuNetSdk WebSocket 长连接接收消息，通过 TenantApi 发送回复。
 /// </summary>
-public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, ITypingIndicator, IImageSender
+public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, ITypingIndicator, IImageSender, IFileSender
 {
     private readonly IFeishuTenantApi _api;
     private readonly FeishuPlatformOptions _options;
@@ -135,6 +135,27 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
 
         await _api.PostImV1MessagesAsync("chat_id", dto);
         _logger.LogInformation("发送飞书图片成功: chatId={ChatId}, path={Path}", ctx.ChatId, filePath);
+    }
+
+    public async Task SendFileAsync(object replyContext, string filePath, CancellationToken ct)
+    {
+        var ctx = (FeishuReplyContext)replyContext;
+        if (!File.Exists(filePath))
+            throw new FileNotFoundException("文件不存在", filePath);
+
+        var fileKey = await UploadFileAsync(filePath, ct);
+        if (string.IsNullOrWhiteSpace(fileKey))
+            throw new InvalidOperationException("上传飞书文件失败，未返回 file_key");
+
+        var dto = new PostImV1MessagesBodyDto
+        {
+            ReceiveId = ctx.ChatId,
+            MsgType = "file",
+            Content = JsonSerializer.Serialize(new { file_key = fileKey }),
+        };
+
+        await _api.PostImV1MessagesAsync("chat_id", dto);
+        _logger.LogInformation("发送飞书文件成功: chatId={ChatId}, path={Path}", ctx.ChatId, filePath);
     }
 
     public async Task SendCardAsync(object replyContext, Card card, CancellationToken ct)
@@ -315,6 +336,76 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
         }
 
         return imageKeyEl.GetString();
+    }
+
+    private async Task<string?> UploadFileAsync(string filePath, CancellationToken ct)
+    {
+        using var client = _httpClientFactory.CreateClient();
+        using var tokenContent = JsonContent.Create(new
+        {
+            app_id = _options.AppId,
+            app_secret = _options.AppSecret,
+        });
+        var tokenResponse = await client.PostAsync("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", tokenContent, ct);
+        if (!tokenResponse.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("获取飞书 tenant_access_token 失败: status={StatusCode}", (int)tokenResponse.StatusCode);
+            return null;
+        }
+
+        await using var tokenStream = await tokenResponse.Content.ReadAsStreamAsync(ct);
+        using var tokenDoc = await JsonDocument.ParseAsync(tokenStream, cancellationToken: ct);
+        if (!tokenDoc.RootElement.TryGetProperty("tenant_access_token", out var tokenEl))
+            return null;
+
+        var token = tokenEl.GetString();
+        if (string.IsNullOrWhiteSpace(token))
+            return null;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://open.feishu.cn/open-apis/im/v1/files");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        using var form = new MultipartFormDataContent();
+        var fileName = Path.GetFileName(filePath);
+        form.Add(new StringContent(GetFeishuFileType(filePath)), "file_type");
+        form.Add(new StringContent(fileName), "file_name");
+
+        await using var fileStream = File.OpenRead(filePath);
+        using var fileContent = new StreamContent(fileStream);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(fileContent, "file", fileName);
+        request.Content = form;
+
+        var response = await client.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("上传飞书文件失败: path={Path}, status={StatusCode}", filePath, (int)response.StatusCode);
+            return null;
+        }
+
+        await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+        using var responseDoc = await JsonDocument.ParseAsync(responseStream, cancellationToken: ct);
+        if (!responseDoc.RootElement.TryGetProperty("data", out var dataEl) ||
+            !dataEl.TryGetProperty("file_key", out var fileKeyEl))
+        {
+            return null;
+        }
+
+        return fileKeyEl.GetString();
+    }
+
+    private static string GetFeishuFileType(string filePath)
+    {
+        return Path.GetExtension(filePath).ToLowerInvariant() switch
+        {
+            ".opus" => "opus",
+            ".mp4" => "mp4",
+            ".pdf" => "pdf",
+            ".doc" or ".docx" => "doc",
+            ".xls" or ".xlsx" => "xls",
+            ".ppt" or ".pptx" => "ppt",
+            _ => "stream",
+        };
     }
 
     private static string GetImageMimeType(string filePath)
