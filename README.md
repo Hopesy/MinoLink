@@ -107,6 +107,30 @@ dotnet build MinoLink.Installer -c Release
 
 在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
 
+#### 一键打包并发布 GitHub Release
+
+如果你要在本机直接完成“构建 MSI + 推送 master/tag + 创建 GitHub Release”，用这个脚本：
+
+```powershell
+pwsh .\scripts\publish-installer.ps1
+```
+
+它会自动：
+
+- 从 `MinoLink.Desktop/MinoLink.Desktop.csproj` 读取当前版本号
+- `dotnet build MinoLink.Installer -c Release`
+- 校验 `MinoLink.Installer/output/` 下的 MSI
+- `git push origin master`
+- 创建并推送 `v{Version}` tag
+- 调用 `gh release create` 创建 GitHub Release
+- 触发 `.github/workflows/release-installer.yml`，由 GitHub Actions 自动重新构建并上传安装包
+
+前置条件：
+
+- 当前分支必须是 `master`
+- 工作区必须干净
+- 本机已安装并登录 `gh`（GitHub CLI）
+
 #### 打包原理
 
 ```
