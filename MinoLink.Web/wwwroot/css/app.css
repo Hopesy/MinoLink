@@ -11,6 +11,7 @@
     --bg: #fafafa;
     --surface: #ffffff;
     --input-bg: #f3f3f5;
+    --table-header-bg: #f8f8fa;
     --border: #eaeaea;
 
     --text: #1a1a1a;
@@ -44,6 +45,7 @@
     --bg: #11111b;
     --surface: #1e1e2e;
     --input-bg: #2a2a3c;
+    --table-header-bg: #242437;
     --border: #333348;
 
     --text: #e0e0ef;
@@ -337,7 +339,7 @@ body::before {
     padding: 14px 20px; text-align: left;
     font-size: 13px; font-weight: 600; color: var(--text-3);
     text-transform: uppercase; letter-spacing: 0.5px;
-    background: var(--input-bg); border-bottom: 1px solid var(--border);
+    background: var(--table-header-bg); border-bottom: 1px solid var(--border);
 }
 .data-table td {
     padding: 15px 20px; font-size: 15px;
@@ -1091,7 +1093,7 @@ body::before {
     padding: 10px 20px; text-align: left;
     font-size: 12px; font-weight: 600; color: var(--text-3);
     text-transform: uppercase; letter-spacing: 0.5px;
-    background: var(--input-bg); border-bottom: 1px solid var(--border);
+    background: var(--table-header-bg); border-bottom: 1px solid var(--border);
 }
 .guide-table td {
     padding: 10px 20px; font-size: 14px;
