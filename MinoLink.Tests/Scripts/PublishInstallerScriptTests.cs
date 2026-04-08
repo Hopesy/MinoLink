@@ -22,12 +22,43 @@ public class PublishInstallerScriptTests
     }
 
     [Fact]
+    public void PublishInstallerScript_ShouldPrintStartupAndHelpfulGitHubCliGuidance()
+    {
+        var scriptPath = GetRepoFilePath("publish-installer.ps1");
+        var script = File.ReadAllText(scriptPath);
+
+        Assert.Contains("Write-Step \"启动发布流程\"", script);
+        Assert.Contains("Write-Step \"检查依赖命令\"", script);
+        Assert.Contains("GitHub CLI", script);
+        Assert.Contains("gh auth login", script);
+    }
+
+    [Fact]
+    public void PublishInstallerCmd_ShouldExistAndInvokePowerShellScript()
+    {
+        var cmdPath = GetRepoFilePath("publish-installer.cmd");
+
+        Assert.True(File.Exists(cmdPath), $"未找到包装脚本: {cmdPath}");
+
+        var cmd = File.ReadAllText(cmdPath);
+
+        Assert.Contains("publish-installer.ps1", cmd);
+        Assert.Contains("pwsh", cmd);
+        Assert.Contains("powershell", cmd);
+        Assert.Contains("EnableDelayedExpansion", cmd);
+        Assert.Contains("!ERRORLEVEL!", cmd);
+        Assert.DoesNotContain("echo ==>", cmd, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pause", cmd, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Readme_ShouldDocumentLocalPublishInstallerScript()
     {
         var readmePath = GetRepoFilePath("README.md");
         var readme = File.ReadAllText(readmePath);
 
         Assert.Contains(".\\publish-installer.ps1", readme);
+        Assert.Contains(".\\publish-installer.cmd", readme);
         Assert.Contains("一键", readme);
         Assert.Contains("GitHub Release", readme);
     }

@@ -16,6 +16,10 @@ function Require-Command {
     param([string]$Name)
 
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+        if ($Name -eq "gh") {
+            throw "未找到命令: gh。请先安装 GitHub CLI，并执行 gh auth login。"
+        }
+
         throw "未找到命令: $Name"
     }
 }
@@ -70,6 +74,10 @@ if (-not (Test-Path $installerProject)) {
     throw "未找到安装包项目: $installerProject"
 }
 
+Write-Step "启动发布流程"
+Write-Host "仓库目录: $repoRoot" -ForegroundColor DarkGray
+
+Write-Step "检查依赖命令"
 Require-Command git
 Require-Command dotnet
 Require-Command gh
@@ -81,6 +89,8 @@ try {
     }
 
     $tag = "v$Version"
+    Write-Host "目标版本: $Version" -ForegroundColor DarkGray
+    Write-Host "目标标签: $tag" -ForegroundColor DarkGray
 
     Write-Step "校验工作区"
     $branch = Get-GitOutput -ArgumentList @("branch", "--show-current")
@@ -134,6 +144,11 @@ try {
     Write-Host ""
     Write-Host "发布已创建：$tag" -ForegroundColor Green
     Write-Host "GitHub Actions 将继续执行 release-installer.yml 并自动上传 MSI。" -ForegroundColor Green
+}
+catch {
+    Write-Host ""
+    Write-Host "发布失败：$($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     Pop-Location

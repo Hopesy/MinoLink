@@ -115,6 +115,12 @@ dotnet build MinoLink.Installer -c Release
 pwsh .\publish-installer.ps1
 ```
 
+如果你是直接双击或想从 Windows/Visual Studio 外部工具里点一下就跑，用这个包装入口：
+
+```bat
+.\publish-installer.cmd
+```
+
 它会自动：
 
 - 从 `MinoLink.Desktop/MinoLink.Desktop.csproj` 读取当前版本号
@@ -130,6 +136,7 @@ pwsh .\publish-installer.ps1
 - 当前分支必须是 `master`
 - 工作区必须干净
 - 本机已安装并登录 `gh`（GitHub CLI）
+- 如果缺 `gh`，脚本会明确提示先安装 **GitHub CLI** 并执行 `gh auth login`
 
 #### 打包原理
 
