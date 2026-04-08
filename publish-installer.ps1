@@ -57,7 +57,7 @@ function Get-GitOutput {
     return ($output | Out-String).Trim()
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repoRoot = $PSScriptRoot
 $desktopProject = Join-Path $repoRoot "MinoLink.Desktop\MinoLink.Desktop.csproj"
 $installerProject = Join-Path $repoRoot "MinoLink.Installer\MinoLink.Installer.csproj"
 $installerOutputDir = Join-Path $repoRoot "MinoLink.Installer\output"

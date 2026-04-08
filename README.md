@@ -112,7 +112,7 @@ dotnet build MinoLink.Installer -c Release
 如果你要在本机直接完成“构建 MSI + 推送 master/tag + 创建 GitHub Release”，用这个脚本：
 
 ```powershell
-pwsh .\scripts\publish-installer.ps1
+pwsh .\publish-installer.ps1
 ```
 
 它会自动：

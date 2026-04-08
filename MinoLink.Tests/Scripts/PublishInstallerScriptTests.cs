@@ -5,7 +5,7 @@ public class PublishInstallerScriptTests
     [Fact]
     public void PublishInstallerScript_ShouldExistAndCoverBuildTagPushAndReleaseFlow()
     {
-        var scriptPath = GetRepoFilePath("scripts", "publish-installer.ps1");
+        var scriptPath = GetRepoFilePath("publish-installer.ps1");
 
         Assert.True(File.Exists(scriptPath), $"未找到脚本: {scriptPath}");
 
@@ -27,7 +27,7 @@ public class PublishInstallerScriptTests
         var readmePath = GetRepoFilePath("README.md");
         var readme = File.ReadAllText(readmePath);
 
-        Assert.Contains("publish-installer.ps1", readme);
+        Assert.Contains(".\\publish-installer.ps1", readme);
         Assert.Contains("一键", readme);
         Assert.Contains("GitHub Release", readme);
     }
