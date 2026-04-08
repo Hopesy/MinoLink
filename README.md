@@ -102,7 +102,7 @@ dotnet run
 
 ```bash
 dotnet build MinoLink.Installer -c Release
-# → MinoLink.Installer/output/MinoLink-1.0.2.msi
+# → MinoLink.Installer/output/MinoLink-1.0.3.msi
 ```
 
 在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
