@@ -1,0 +1,71 @@
+name: Release Installer
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing git tag to build and upload
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Resolve target ref
+        id: ref
+        shell: pwsh
+        run: |
+          $tag = '${{ github.event.release.tag_name }}'
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = '${{ inputs.tag }}'
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw 'No release tag was provided.'
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+
+      - name: Restore installer dependencies
+        shell: pwsh
+        run: dotnet restore .\MinoLink.Installer\MinoLink.Installer.csproj
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: dotnet build .\MinoLink.Installer\MinoLink.Installer.csproj -c Release -m:1
+
+      - name: Verify MSI output exists
+        id: installer
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem .\MinoLink.Installer\output\*.msi | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $msi) {
+            throw 'No MSI file was produced in MinoLink.Installer/output.'
+          }
+          "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload MSI to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ref.outputs.tag }}
+          files: ${{ steps.installer.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

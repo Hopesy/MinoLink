@@ -165,7 +165,7 @@ public sealed class FeishuMessageHandler : IEventHandler<EventV2Dto<ImMessageRec
             foreach (var c in Path.GetInvalidFileNameChars())
                 safeName = safeName.Replace(c, '_');
 
-            var dir = Path.Combine(AppContext.BaseDirectory, "data", "feishu-files", DateTime.Now.ToString("yyyyMMdd"));
+            var dir = GetAttachmentStorageDirectory(DateTime.Now);
             Directory.CreateDirectory(dir);
             var filePath = Path.Combine(dir, $"{messageId}_{safeName}");
             await using var fs = File.Create(filePath);
@@ -189,6 +189,11 @@ public sealed class FeishuMessageHandler : IEventHandler<EventV2Dto<ImMessageRec
             _logger.LogWarning(ex, "下载飞书资源异常: messageId={MessageId}, fileKey={FileKey}, type={Type}", messageId, fileKey, resourceType);
             return null;
         }
+    }
+
+    private static string GetAttachmentStorageDirectory(DateTime date)
+    {
+        return Path.Combine(AppContext.BaseDirectory, "output", "feishu-files", date.ToString("yyyyMMdd"));
     }
 
     private async Task<string?> GetTenantAccessTokenAsync(CancellationToken ct)
