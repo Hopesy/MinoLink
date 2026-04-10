@@ -25,7 +25,9 @@ public sealed class DesktopUpdatePackageServiceTests
         var source = File.ReadAllText(GetRepoPath("MinoLink.Desktop", "Services", "AppUpdatePackageService.cs"));
 
         Assert.Contains("LaunchInstallerAndShutdown", source, StringComparison.Ordinal);
-        Assert.Contains("Application.Current", source, StringComparison.Ordinal);
+        Assert.Contains("StartUpdateOrchestrator(installerPath, appPath, currentProcessId);", source, StringComparison.Ordinal);
+        Assert.Contains("msiexec.exe", source, StringComparison.Ordinal);
+        Assert.Contains("Start-Process -FilePath $appPath", source, StringComparison.Ordinal);
         Assert.Contains("app.Shutdown()", source, StringComparison.Ordinal);
     }
 
