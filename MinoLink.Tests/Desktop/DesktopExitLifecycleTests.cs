@@ -34,6 +34,16 @@ public sealed class DesktopExitLifecycleTests
         Assert.Contains("StartRestartProcessIfRequested();", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DesktopApp_ShouldTreatAbandonedMutexAsAcquired()
+    {
+        var source = LoadDesktopAppSource();
+
+        Assert.Contains("catch (AbandonedMutexException)", source, StringComparison.Ordinal);
+        Assert.Contains("return true;", ExtractMethod(source, "private static bool TryAcquireSingleInstanceMutex()"), StringComparison.Ordinal);
+        Assert.Contains("if (!TryAcquireSingleInstanceMutex())", source, StringComparison.Ordinal);
+    }
+
     private static string LoadDesktopAppSource() =>
         File.ReadAllText(GetRepoPath("MinoLink.Desktop", "App.xaml.cs"));
 

@@ -45,7 +45,7 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
 
         // 单实例保护：防止多进程同时运行导致托盘残留
-        if (!SingleInstanceMutex.WaitOne(0, false))
+        if (!TryAcquireSingleInstanceMutex())
         {
             System.Windows.MessageBox.Show(
                 "MinoLink 已经在运行中。", "MinoLink",
@@ -122,6 +122,18 @@ public partial class App : System.Windows.Application
         try { _host?.Dispose(); } catch { /* ignore */ }
         _host = null;
         ReleaseSingleInstanceMutex();
+    }
+
+    private static bool TryAcquireSingleInstanceMutex()
+    {
+        try
+        {
+            return SingleInstanceMutex.WaitOne(0, false);
+        }
+        catch (AbandonedMutexException)
+        {
+            return true;
+        }
     }
 
     private IHost BuildHost()
