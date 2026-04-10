@@ -102,7 +102,7 @@ dotnet run
 
 ```bash
 dotnet build MinoLink.Installer -c Release
-# → MinoLink.Installer/output/MinoLink-1.0.4-win-x64.msi
+# → MinoLink.Installer/output/MinoLink-1.0.5-win-x64.msi
 ```
 
 在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
@@ -199,7 +199,7 @@ dotnet build MinoLink.Installer
 ### 更新日志（Changelog）
 
 - 项目根目录维护 `CHANGELOG.md`
-- 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.4`）
+- 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.5`）
 
 ### 日志文件
 

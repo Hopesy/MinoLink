@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>icon.ico</ApplicationIcon>
-    <Version>1.0.4</Version>
+    <Version>1.0.5</Version>
     <UserSecretsId>dotnet-MinoLink-0061c545-1fd8-44a0-a86c-8bd375125b3d</UserSecretsId>
     <!-- 只保留简体中文，排除所有其余语言包 -->
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
