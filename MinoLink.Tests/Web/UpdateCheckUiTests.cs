@@ -29,8 +29,8 @@ public sealed class UpdateCheckUiTests
     {
         var source = File.ReadAllText(GetRepoPath("MinoLink.Web", "Components", "Layout", "MainLayout.razor"));
 
-        Assert.Contains("M8 1.5v5", source, StringComparison.Ordinal);
-        Assert.Contains("A5.5 5.5 0 103.02 3.18", source, StringComparison.Ordinal);
+        Assert.Contains("M8 1.75v4.75", source, StringComparison.Ordinal);
+        Assert.Contains("M11.9 3.15a5.25 5.25 0 11-7.8 0", source, StringComparison.Ordinal);
         Assert.DoesNotContain("@if (_autoStart)\r\n                    {\r\n                        <svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\"><path d=\"M13.3 4L6 11.3 2.7 8\"", source, StringComparison.Ordinal);
     }
 
