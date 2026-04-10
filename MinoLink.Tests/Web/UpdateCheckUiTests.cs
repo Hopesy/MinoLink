@@ -45,6 +45,16 @@ public sealed class UpdateCheckUiTests
         Assert.DoesNotContain("config#update-panel", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainLayout_ShouldAutoLaunchInstallerAfterSuccessfulDownload()
+    {
+        var source = File.ReadAllText(GetRepoPath("MinoLink.Web", "Components", "Layout", "MainLayout.razor"));
+
+        Assert.Contains("下载并更新", source, StringComparison.Ordinal);
+        Assert.Contains("LaunchInstallerAndShutdown", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private void LaunchInstaller()", source, StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] segments)
     {
         var path = AppContext.BaseDirectory;

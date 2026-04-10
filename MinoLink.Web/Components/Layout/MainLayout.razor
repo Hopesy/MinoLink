@@ -121,12 +121,8 @@
 
                             <div class="update-result-actions">
                                 <button class="btn-small" type="button" @onclick="DownloadUpdateAsync" disabled="@_isDownloadingUpdate">
-                                    @(_isDownloadingUpdate ? "下载中..." : "下载更新")
+                                    @(_isDownloadingUpdate ? "下载中..." : "下载并更新")
                                 </button>
-                                @if (_downloadResult?.IsSuccess == true && !string.IsNullOrWhiteSpace(_downloadResult.InstallerPath))
-                                {
-                                    <button class="btn-small" type="button" @onclick="LaunchInstaller">启动安装器</button>
-                                }
                             </div>
 
                             @if (_downloadResult is not null)
@@ -241,6 +237,10 @@
         try
         {
             _downloadResult = await AppUpdatePackageService.DownloadInstallerAsync(_updateResult.LatestRelease);
+            if (_downloadResult.IsSuccess && !string.IsNullOrWhiteSpace(_downloadResult.InstallerPath))
+            {
+                AppUpdatePackageService.LaunchInstallerAndShutdown(_downloadResult.InstallerPath);
+            }
         }
         catch (Exception ex)
         {
@@ -249,21 +249,6 @@
         finally
         {
             _isDownloadingUpdate = false;
-        }
-    }
-
-    private void LaunchInstaller()
-    {
-        if (string.IsNullOrWhiteSpace(_downloadResult?.InstallerPath))
-            return;
-
-        try
-        {
-            AppUpdatePackageService.LaunchInstaller(_downloadResult.InstallerPath);
-        }
-        catch (Exception ex)
-        {
-            _downloadResult = AppUpdateDownloadResult.Failed($"启动安装器失败：{ex.Message}");
         }
     }
 

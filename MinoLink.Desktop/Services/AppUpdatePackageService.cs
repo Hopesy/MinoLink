@@ -4,6 +4,7 @@ using System.Net.Http;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
 using MinoLink.Core.Services;
+using WpfApplication = System.Windows.Application;
 
 namespace MinoLink.Desktop.Services;
 
@@ -58,5 +59,16 @@ public sealed class AppUpdatePackageService(IHttpClientFactory httpClientFactory
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(installerPath) ?? AppContext.BaseDirectory,
         });
+    }
+
+    public void LaunchInstallerAndShutdown(string installerPath)
+    {
+        LaunchInstaller(installerPath);
+
+        var app = WpfApplication.Current;
+        if (app is null)
+            return;
+
+        _ = app.Dispatcher.BeginInvoke(() => app.Shutdown());
     }
 }

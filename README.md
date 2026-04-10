@@ -178,7 +178,7 @@ dotnet build MinoLink.Installer
 - 手动入口：顶栏里的 **检查更新**
 - 版本判断：自动忽略 `draft` / `prerelease`
 - 下载位置：`%LocalAppData%\\MinoLink\\updates\\{version}\\`
-- 安装方式：下载 MSI 后，由当前应用拉起安装器完成升级
+- 安装方式：点击 **下载并更新** 后，应用会下载 MSI、自动拉起安装器并关闭当前进程
 
 默认更新仓库配置在 `MinoLink/appsettings.json` 顶层 `ReleaseUpdate`：
 
@@ -192,9 +192,14 @@ dotnet build MinoLink.Installer
 
 说明：
 
-- 当前实现是“手动检查 + 手动下载 + 启动安装器”的安全模式
+- 当前实现是“手动检查 + 一键下载并更新”的模式
 - 还没有做静默后台升级
 - 如果你 fork 到自己的仓库，记得同步修改 `ReleaseUpdate`
+
+### 更新日志（Changelog）
+
+- 项目根目录维护 `CHANGELOG.md`
+- 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.4`）
 
 ### 日志文件
 

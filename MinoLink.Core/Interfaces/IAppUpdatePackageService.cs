@@ -7,4 +7,6 @@ public interface IAppUpdatePackageService
     Task<AppUpdateDownloadResult> DownloadInstallerAsync(AppReleaseInfo release, CancellationToken cancellationToken = default);
 
     void LaunchInstaller(string installerPath);
+
+    void LaunchInstallerAndShutdown(string installerPath);
 }

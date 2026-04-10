@@ -19,6 +19,16 @@ public sealed class DesktopUpdatePackageServiceTests
         Assert.Contains("Process.Start(new ProcessStartInfo", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void UpdatePackageService_ShouldSupportAutoUpdateHandoffAndShutdown()
+    {
+        var source = File.ReadAllText(GetRepoPath("MinoLink.Desktop", "Services", "AppUpdatePackageService.cs"));
+
+        Assert.Contains("LaunchInstallerAndShutdown", source, StringComparison.Ordinal);
+        Assert.Contains("Application.Current", source, StringComparison.Ordinal);
+        Assert.Contains("app.Shutdown()", source, StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] segments)
     {
         var path = AppContext.BaseDirectory;
