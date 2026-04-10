@@ -94,7 +94,7 @@ dotnet run
 桌面模式特性：
 - 关闭窗口自动隐藏到系统托盘，双击托盘图标恢复
 - 托盘右键菜单：「显示窗口」「开机自启」「退出」
-- Config 页面可切换开机自启
+- 顶栏可直接切换开机自启与检查更新
 
 ### 构建安装包
 
@@ -102,7 +102,7 @@ dotnet run
 
 ```bash
 dotnet build MinoLink.Installer -c Release
-# → MinoLink.Installer/output/MinoLink-1.0.3.msi
+# → MinoLink.Installer/output/MinoLink-1.0.4-win-x64.msi
 ```
 
 在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
@@ -150,16 +150,16 @@ dotnet build MinoLink.Installer
         │        → 输出到 MinoLink.Desktop/bin/Release/net8.0-windows10.0.19041/win-x64/publish/
         │
         └─ 3. WixSharp Target「MSIAuthoring」执行 Installer.exe
-              ├─ InstallerProjectPaths：从 Desktop.csproj 读取 Version 和 ApplicationIcon
+              ├─ InstallerProjectPaths：从 Desktop.csproj 读取 Version
               ├─ 收集 publish 目录下所有文件 → 打入 MSI
               ├─ InstallerShellLayout：创建开始菜单 + 桌面快捷方式
-              └─ 生成 MinoLink-{version}.msi
+              └─ 生成 MinoLink-{version}-win-x64.msi
 ```
 
 | 组件 | 文件 | 职责 |
 |---|---|---|
 | `Installer.cs` | Main 入口 | 配置 WixSharp Project，调用 `BuildMsi()` |
-| `InstallerProjectPaths.cs` | 路径解析 | 从仓库结构定位 publish 目录，从 csproj 读取版本号和图标 |
+| `InstallerProjectPaths.cs` | 路径解析 | 从仓库结构定位 publish 目录，从 csproj 读取版本号 |
 | `InstallerShellLayout.cs` | 快捷方式 | 定义开始菜单和桌面快捷方式的目标路径 |
 
 安装行为：
@@ -168,6 +168,33 @@ dotnet build MinoLink.Installer
 - 快捷方式：开始菜单 `MinoLink` + 桌面 `MinoLink`
 - 升级：基于 UpgradeCode 的 MSI 标准升级，安装新版本自动替换旧版本
 - 版本号：从 `MinoLink.Desktop.csproj` 的 `<Version>` 元素自动读取
+
+### 应用内版本与更新
+
+桌面端现在已经接通一套最小可用的版本 / 更新链路：
+
+- 当前版本显示：顶栏直接显示 `MinoLink.Desktop.csproj` 的 `<Version>`
+- 更新源：只认 GitHub Release 正式版
+- 手动入口：顶栏里的 **检查更新**
+- 版本判断：自动忽略 `draft` / `prerelease`
+- 下载位置：`%LocalAppData%\\MinoLink\\updates\\{version}\\`
+- 安装方式：下载 MSI 后，由当前应用拉起安装器完成升级
+
+默认更新仓库配置在 `MinoLink/appsettings.json` 顶层 `ReleaseUpdate`：
+
+```json
+"ReleaseUpdate": {
+  "ApiBaseUrl": "https://api.github.com/",
+  "GitHubOwner": "Hopesy",
+  "GitHubRepo": "MinoLink"
+}
+```
+
+说明：
+
+- 当前实现是“手动检查 + 手动下载 + 启动安装器”的安全模式
+- 还没有做静默后台升级
+- 如果你 fork 到自己的仓库，记得同步修改 `ReleaseUpdate`
 
 ### 日志文件
 

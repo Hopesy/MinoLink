@@ -41,7 +41,7 @@ internal static class Program
             project.ControlPanelInfo.InstallLocation = "[INSTALLDIR]";
             project.ControlPanelInfo.NoModify = true;
             project.ControlPanelInfo.NoRepair = true;
-            project.OutFileName = $"{ProductName}-{project.Version}";
+            project.OutFileName = $"{ProductName}-{project.Version}-win-x64";
 
             Console.WriteLine($"主程序发布目录: {paths.PublishDirectory}");
             Console.WriteLine($"主程序入口: {publishExecutablePath}");
@@ -84,7 +84,7 @@ internal static class Program
 
         if (!IO.File.Exists(iconPath))
         {
-            throw new IO.FileNotFoundException("未找到安装器图标文件。", iconPath);
+            throw new IO.FileNotFoundException("未找到控制面板图标文件。", iconPath);
         }
 
         return iconPath;

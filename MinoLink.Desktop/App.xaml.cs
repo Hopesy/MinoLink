@@ -2,6 +2,7 @@ using System.Drawing;
 using System.IO;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Net.Http.Headers;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -151,6 +152,22 @@ public partial class App : System.Windows.Application
         var defaultWorkDir = ResolveDefaultWorkDir(config.Agent.WorkDir);
 
         builder.Services.AddSingleton<IConfigService>(new ConfigService(configPath, config));
+        builder.Services.AddSingleton<IAppVersionProvider, AppVersionProvider>();
+        builder.Services.AddSingleton<GitHubReleaseUpdateResolver>();
+
+        var releaseUpdateOptions = builder.Configuration.GetSection("ReleaseUpdate").Get<ReleaseUpdateOptions>() ?? new ReleaseUpdateOptions();
+        builder.Services.AddSingleton(releaseUpdateOptions);
+        builder.Services.AddHttpClient<IAppUpdateService, GitHubReleaseUpdateService>((_, client) =>
+        {
+            client.BaseAddress = new Uri(releaseUpdateOptions.ApiBaseUrl);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("MinoLink-Desktop");
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        });
+        builder.Services.AddHttpClient("MinoLink.UpdatePackages", client =>
+        {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("MinoLink-Desktop");
+        });
+        builder.Services.AddSingleton<IAppUpdatePackageService, AppUpdatePackageService>();
 
         builder.Services.AddSingleton<AutoStartHelper>();
         builder.Services.AddSingleton<IAutoStartService>(sp => sp.GetRequiredService<AutoStartHelper>());

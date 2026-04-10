@@ -52,21 +52,6 @@ public sealed class InstallerProjectPaths
         return new InstallerProjectPaths(normalizedRepositoryRoot, applicationProjectPath, publishDirectory);
     }
 
-    public static string ReadApplicationIconRelativePath(string projectFilePath)
-    {
-        var iconElement = LoadProjectDocument(projectFilePath)
-            .Descendants()
-            .FirstOrDefault(element => string.Equals(element.Name.LocalName, "ApplicationIcon", StringComparison.Ordinal));
-
-        var iconRelativePath = iconElement?.Value?.Trim();
-        if (string.IsNullOrWhiteSpace(iconRelativePath))
-        {
-            throw new InvalidOperationException($"未在项目文件中找到 ApplicationIcon：{projectFilePath}");
-        }
-
-        return iconRelativePath;
-    }
-
     public static string ReadProductVersion(string projectFilePath)
     {
         var versionElement = LoadProjectDocument(projectFilePath)
@@ -80,6 +65,21 @@ public sealed class InstallerProjectPaths
         }
 
         return configuredVersion;
+    }
+
+    public static string ReadApplicationIconRelativePath(string projectFilePath)
+    {
+        var iconElement = LoadProjectDocument(projectFilePath)
+            .Descendants()
+            .FirstOrDefault(element => string.Equals(element.Name.LocalName, "ApplicationIcon", StringComparison.Ordinal));
+
+        var iconRelativePath = iconElement?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(iconRelativePath))
+        {
+            throw new InvalidOperationException($"未在项目文件中找到 ApplicationIcon：{projectFilePath}");
+        }
+
+        return iconRelativePath;
     }
 
     public string GetPublishExecutablePath()

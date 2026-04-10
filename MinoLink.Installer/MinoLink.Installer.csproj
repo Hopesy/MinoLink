@@ -23,7 +23,7 @@
 
   <!-- 构建前自动 publish Desktop 项目 -->
   <Target Name="PublishDesktop" BeforeTargets="MSIAuthoring">
-    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\MinoLink.Desktop\MinoLink.Desktop.csproj&quot; -c Release -r win-x64 --self-contained" />
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\MinoLink.Desktop\MinoLink.Desktop.csproj&quot; -c Release -r win-x64 --self-contained -m:1" />
   </Target>
 
 </Project>

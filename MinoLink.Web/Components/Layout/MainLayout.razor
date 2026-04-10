@@ -2,8 +2,12 @@
 @implements IDisposable
 @using Microsoft.Extensions.DependencyInjection
 @using MinoLink.Core.Interfaces
+@using MinoLink.Core.Models
 @inject IServiceProvider ServiceProvider
 @inject IJSRuntime JS
+@inject IAppVersionProvider AppVersionProvider
+@inject IAppUpdateService AppUpdateService
+@inject IAppUpdatePackageService AppUpdatePackageService
 
 <div class="layout">
     <nav class="topnav">
@@ -19,20 +23,21 @@
         <div class="nav-right">
             <span class="nav-dot"></span>
             <span class="nav-status-text">运行中</span>
+            <span class="nav-version" title="当前版本">@AppVersionProvider.Version</span>
+            <button class="nav-update-link" type="button" title="检查更新" @onclick="OpenUpdateModal">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l3-3m-3 3L5 4M3 9v3a2 2 0 002 2h6a2 2 0 002-2V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>检查更新</span>
+            </button>
 
             @if (_autoStartService is not null)
             {
                 <button class="nav-icon-btn @(_autoStart ? "active" : "")"
                         title="@(_autoStart ? "开机自启：已开启" : "开机自启：已关闭")"
                         @onclick="ToggleAutoStart">
-                    @if (_autoStart)
-                    {
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.3 4L6 11.3 2.7 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    }
-                    else
-                    {
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l3-3m-3 3L5 4M3 9v3a2 2 0 002 2h6a2 2 0 002-2V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    }
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 1.5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        <path d="M12.98 3.18A5.5 5.5 0 103.02 3.18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
                     <span>自启</span>
                 </button>
             }
@@ -49,16 +54,114 @@
             </button>
         </div>
     </nav>
+
     <main class="main-content">
         @Body
     </main>
 </div>
+
+@if (_showUpdateModal)
+{
+    <div class="update-modal-backdrop" @onclick="CloseUpdateModal">
+        <div class="update-modal-card" @onclick:stopPropagation="true">
+            <div class="update-modal-header">
+                <div>
+                    <h3>版本与更新</h3>
+                    <p>当前版本 @AppVersionProvider.Version</p>
+                </div>
+                <button class="update-modal-close" type="button" title="关闭" @onclick="CloseUpdateModal">×</button>
+            </div>
+
+            <div class="update-modal-body">
+                <div class="update-meta-row">
+                    <div class="update-meta-pill">
+                        <span>当前版本</span>
+                        <strong>@AppVersionProvider.Version</strong>
+                    </div>
+                    <div class="update-meta-pill">
+                        <span>更新源</span>
+                        <strong>GitHub Release</strong>
+                    </div>
+                    @if (_updateResult?.LatestRelease is not null)
+                    {
+                        <div class="update-meta-pill">
+                            <span>最新版本</span>
+                            <strong>@_updateResult.LatestRelease.Version</strong>
+                        </div>
+                    }
+                </div>
+
+                <div class="update-modal-actions">
+                    <button class="btn-primary" type="button" @onclick="CheckForUpdatesAsync" disabled="@_isCheckingForUpdate">
+                        @(_isCheckingForUpdate ? "检查中..." : "检查更新")
+                    </button>
+                </div>
+
+                @if (_updateResult is not null)
+                {
+                    if (!_updateResult.IsSuccess)
+                    {
+                        <div class="alert alert-warning">@_updateResult.ErrorMessage</div>
+                    }
+                    else if (_updateResult.IsUpdateAvailable && _updateResult.LatestRelease is not null)
+                    {
+                        <div class="update-result-card is-update">
+                            <div class="update-result-head">
+                                <div>
+                                    <h3>发现新版本 @_updateResult.LatestRelease.Version</h3>
+                                    <p>发布时间：@FormatPublishedAt(_updateResult.LatestRelease.PublishedAt)</p>
+                                </div>
+                                <a class="btn-small" href="@_updateResult.LatestRelease.HtmlUrl" target="_blank" rel="noopener noreferrer">查看 Release</a>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(_updateResult.LatestRelease.Notes))
+                            {
+                                <p class="update-result-summary">@GetUpdateSummary(_updateResult.LatestRelease.Notes)</p>
+                            }
+
+                            <div class="update-result-actions">
+                                <button class="btn-small" type="button" @onclick="DownloadUpdateAsync" disabled="@_isDownloadingUpdate">
+                                    @(_isDownloadingUpdate ? "下载中..." : "下载更新")
+                                </button>
+                                @if (_downloadResult?.IsSuccess == true && !string.IsNullOrWhiteSpace(_downloadResult.InstallerPath))
+                                {
+                                    <button class="btn-small" type="button" @onclick="LaunchInstaller">启动安装器</button>
+                                }
+                            </div>
+
+                            @if (_downloadResult is not null)
+                            {
+                                if (_downloadResult.IsSuccess && !string.IsNullOrWhiteSpace(_downloadResult.InstallerPath))
+                                {
+                                    <p class="update-download-path">已下载到：@_downloadResult.InstallerPath</p>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(_downloadResult.ErrorMessage))
+                                {
+                                    <p class="update-download-path is-error">@_downloadResult.ErrorMessage</p>
+                                }
+                            }
+                        </div>
+                    }
+                    else if (_updateResult.LatestRelease is not null)
+                    {
+                        <div class="alert alert-success">当前已是最新版本（@_updateResult.LatestRelease.Version）。</div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
 
 @code {
     private IAutoStartService? _autoStartService;
     private bool _autoStart;
     private bool _isDark;
     private Action? _onAutoStartChanged;
+    private bool _showUpdateModal;
+    private AppUpdateCheckResult? _updateResult;
+    private bool _isCheckingForUpdate;
+    private AppUpdateDownloadResult? _downloadResult;
+    private bool _isDownloadingUpdate;
 
     protected override void OnInitialized()
     {
@@ -67,7 +170,6 @@
         {
             _autoStart = _autoStartService.IsAutoStartEnabled();
 
-            // 监听外部变化（托盘菜单切换时联动刷新）
             _onAutoStartChanged = () => InvokeAsync(() =>
             {
                 _autoStart = _autoStartService.IsAutoStartEnabled();
@@ -96,6 +198,89 @@
     {
         _isDark = !_isDark;
         await JS.InvokeVoidAsync("minoTheme.toggle", _isDark);
+    }
+
+    private void OpenUpdateModal()
+    {
+        _showUpdateModal = true;
+    }
+
+    private void CloseUpdateModal()
+    {
+        _showUpdateModal = false;
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_isCheckingForUpdate)
+            return;
+
+        _isCheckingForUpdate = true;
+        try
+        {
+            _updateResult = await AppUpdateService.CheckForUpdateAsync();
+            _downloadResult = null;
+        }
+        catch (Exception ex)
+        {
+            _updateResult = AppUpdateCheckResult.Failed(AppVersionProvider.Version, $"检查更新失败：{ex.Message}");
+            _downloadResult = null;
+        }
+        finally
+        {
+            _isCheckingForUpdate = false;
+        }
+    }
+
+    private async Task DownloadUpdateAsync()
+    {
+        if (_isDownloadingUpdate || _updateResult?.LatestRelease is null)
+            return;
+
+        _isDownloadingUpdate = true;
+        try
+        {
+            _downloadResult = await AppUpdatePackageService.DownloadInstallerAsync(_updateResult.LatestRelease);
+        }
+        catch (Exception ex)
+        {
+            _downloadResult = AppUpdateDownloadResult.Failed($"下载更新失败：{ex.Message}");
+        }
+        finally
+        {
+            _isDownloadingUpdate = false;
+        }
+    }
+
+    private void LaunchInstaller()
+    {
+        if (string.IsNullOrWhiteSpace(_downloadResult?.InstallerPath))
+            return;
+
+        try
+        {
+            AppUpdatePackageService.LaunchInstaller(_downloadResult.InstallerPath);
+        }
+        catch (Exception ex)
+        {
+            _downloadResult = AppUpdateDownloadResult.Failed($"启动安装器失败：{ex.Message}");
+        }
+    }
+
+    private static string FormatPublishedAt(DateTimeOffset? publishedAt) =>
+        publishedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "未知";
+
+    private static string GetUpdateSummary(string notes)
+    {
+        var normalized = notes.Replace("\r\n", "\n").Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(3);
+
+        return string.Join(" / ", lines);
     }
 
     public void Dispose()
