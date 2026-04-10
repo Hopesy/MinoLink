@@ -55,6 +55,15 @@ public sealed class UpdateCheckUiTests
         Assert.DoesNotContain("private void LaunchInstaller()", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainLayout_ShouldWarnWhenCurrentVersionIsAheadOfReleaseFeed()
+    {
+        var source = File.ReadAllText(GetRepoPath("MinoLink.Web", "Components", "Layout", "MainLayout.razor"));
+
+        Assert.Contains("高于更新源最新正式版", source, StringComparison.Ordinal);
+        Assert.Contains("IsCurrentVersionAheadOfLatest", source, StringComparison.Ordinal);
+    }
+
     private static string GetRepoPath(params string[] segments)
     {
         var path = AppContext.BaseDirectory;

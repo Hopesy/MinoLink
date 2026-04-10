@@ -3,6 +3,7 @@
 @using Microsoft.Extensions.DependencyInjection
 @using MinoLink.Core.Interfaces
 @using MinoLink.Core.Models
+@using MinoLink.Core.Services
 @inject IServiceProvider ServiceProvider
 @inject IJSRuntime JS
 @inject IAppVersionProvider AppVersionProvider
@@ -140,7 +141,14 @@
                     }
                     else if (_updateResult.LatestRelease is not null)
                     {
-                        <div class="alert alert-success">当前已是最新版本（@_updateResult.LatestRelease.Version）。</div>
+                        @if (IsCurrentVersionAheadOfLatest(_updateResult))
+                        {
+                            <div class="alert alert-warning">当前版本（@_updateResult.CurrentVersion）高于更新源最新正式版（@_updateResult.LatestRelease.Version），请确认是否尚未发布该版本。</div>
+                        }
+                        else
+                        {
+                            <div class="alert alert-success">当前已是最新版本（@_updateResult.LatestRelease.Version）。</div>
+                        }
                     }
                 }
             </div>
@@ -266,6 +274,29 @@
             .Take(3);
 
         return string.Join(" / ", lines);
+    }
+
+    private static bool IsCurrentVersionAheadOfLatest(AppUpdateCheckResult result)
+    {
+        if (result.LatestRelease is null)
+            return false;
+
+        return CompareVersionText(result.CurrentVersion, result.LatestRelease.Version) > 0;
+    }
+
+    private static int CompareVersionText(string? left, string? right)
+    {
+        var hasLeft = GitHubReleaseUpdateResolver.TryParseVersion(left, out var leftVersion);
+        var hasRight = GitHubReleaseUpdateResolver.TryParseVersion(right, out var rightVersion);
+
+        if (!hasLeft && !hasRight)
+            return 0;
+        if (!hasLeft)
+            return -1;
+        if (!hasRight)
+            return 1;
+
+        return leftVersion.CompareTo(rightVersion);
     }
 
     public void Dispose()
