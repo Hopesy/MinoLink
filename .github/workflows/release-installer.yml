@@ -43,10 +43,36 @@ jobs:
           "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'
+          if ($version.StartsWith('v')) {
+            $version = $version.Substring(1)
+          }
+
+          $changelogPath = Join-Path $PWD 'CHANGELOG.md'
+          if (-not (Test-Path $changelogPath)) {
+            throw 'CHANGELOG.md not found.'
+          }
+
+          $content = Get-Content $changelogPath -Raw
+          $pattern = "(?ms)^## \[$([regex]::Escape($version))\].*?(?=^## \[|\z)"
+          $match = [regex]::Match($content, $pattern)
+          if (-not $match.Success) {
+            throw "Version section [$version] not found in CHANGELOG.md."
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
+          $body = $match.Value.Trim()
+          [System.IO.File]::WriteAllText($notesPath, $body + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+          "path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Upload MSI to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: ${{ steps.installer.outputs.path }}
+          body_path: ${{ steps.notes.outputs.path }}
           fail_on_unmatched_files: true
-          generate_release_notes: true

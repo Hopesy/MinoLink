@@ -189,6 +189,7 @@ dotnet build MinoLink.Installer
 ### 更新日志（Changelog）
 
 - 项目根目录维护 `CHANGELOG.md`
+- GitHub Release 说明直接取对应版本的 `CHANGELOG.md` 区块
 - 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.6`）
 
 ### 日志文件
