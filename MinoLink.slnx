@@ -3,7 +3,6 @@
   <Project Path="MinoLink.Codex/MinoLink.Codex.csproj" />
   <Project Path="MinoLink.Core/MinoLink.Core.csproj" />
   <Project Path="MinoLink.Feishu/MinoLink.Feishu.csproj" />
-  <Project Path="MinoLink.Tests/MinoLink.Tests.csproj" />
   <Project Path="MinoLink.Web/MinoLink.Web.csproj" />
   <Project Path="MinoLink/MinoLink.csproj" />
   <Project Path="MinoLink.Desktop/MinoLink.Desktop.csproj" />

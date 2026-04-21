@@ -102,41 +102,31 @@ dotnet run
 
 ```bash
 dotnet build MinoLink.Installer -c Release
-# → MinoLink.Installer/output/MinoLink-1.0.5-win-x64.msi
+# → MinoLink.Installer/output/MinoLink-1.0.6-win-x64.msi
 ```
 
 在 Visual Studio 中：将配置切到 **Release** → 右键 `MinoLink.Installer` → **生成**，一步完成。
 
 #### 一键打包并发布 GitHub Release
 
-如果你要在本机直接完成“构建 MSI + 推送 master/tag + 创建 GitHub Release”，用这个脚本：
+不再提供本地 `publish-installer` 脚本。安装包发布统一交给 GitHub Actions：
 
-```powershell
-pwsh .\publish-installer.ps1
-```
+- `.github/workflows/release-installer.yml`
+- 触发方式：推送版本 tag（如 `v1.0.6`）后自动触发
 
-如果你是直接双击或想从 Windows/Visual Studio 外部工具里点一下就跑，用这个包装入口：
+标准发布流程：
 
-```bat
-.\publish-installer.cmd
-```
-
-它会自动：
-
-- 从 `MinoLink.Desktop/MinoLink.Desktop.csproj` 读取当前版本号
-- `dotnet build MinoLink.Installer -c Release`
-- 校验 `MinoLink.Installer/output/` 下的 MSI
-- `git push origin master`
-- 创建并推送 `v{Version}` tag
-- 调用 `gh release create` 创建 GitHub Release
-- 触发 `.github/workflows/release-installer.yml`，由 GitHub Actions 自动重新构建并上传安装包
+1. 提交并推送 `master`
+2. 创建并推送 `v{Version}` tag
+3. Workflow 自动在远端构建 MSI
+4. Workflow 自动创建/更新对应 GitHub Release，并上传 MSI
 
 前置条件：
 
 - 当前分支必须是 `master`
 - 工作区必须干净
-- 本机已安装并登录 `gh`（GitHub CLI）
-- 如果缺 `gh`，脚本会明确提示先安装 **GitHub CLI** 并执行 `gh auth login`
+- 不要求本地安装 WiX/Installer 构建链
+- 远端 runner 负责 restore、build 与 MSI 上传
 
 #### 打包原理
 
@@ -199,7 +189,7 @@ dotnet build MinoLink.Installer
 ### 更新日志（Changelog）
 
 - 项目根目录维护 `CHANGELOG.md`
-- 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.5`）
+- 建议每次发布前先补 `Unreleased`，发布后将对应条目落到版本号区块（例如 `1.0.6`）
 
 ### 日志文件
 
