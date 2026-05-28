@@ -8,7 +8,6 @@ namespace MinoLink.Installer;
 public sealed class InstallerProjectPaths
 {
     private const string ApplicationProjectName = "MinoLink.Desktop";
-    private const string ApplicationExecutableName = "MinoLink.Desktop.exe";
     private const string ReleaseTargetFramework = "net8.0-windows10.0.19041";
     private const string ReleaseRuntimeIdentifier = "win-x64";
 
@@ -30,6 +29,8 @@ public sealed class InstallerProjectPaths
     public string PublishDirectory { get; }
 
     public string PublishExecutablePath { get; }
+
+    public static string ApplicationExecutableName => "MinoLink.Desktop.exe";
 
     public static InstallerProjectPaths FromRepositoryRoot(string repositoryRoot)
     {
