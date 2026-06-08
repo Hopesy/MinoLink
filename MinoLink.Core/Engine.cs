@@ -14,15 +14,15 @@ namespace MinoLink.Core;
 /// <summary>
 /// 消息引擎：路由 Platform 消息到 Agent 会话，处理事件流。
 /// </summary>
-public sealed class Engine : IAsyncDisposable
+public sealed partial class Engine : IAsyncDisposable
 {
     private const string ClaudeAgentType = "claudecode";
     private const string CodexAgentType = "codex";
     private static readonly TimeSpan AgentInterruptTimeout = TimeSpan.FromMilliseconds(800);
 
-    private readonly record struct AgentDirectiveResult(bool Recognized, bool AgentChanged)
+    private readonly record struct AgentDirectiveResult(bool AgentChanged)
     {
-        public static AgentDirectiveResult None => new(false, false);
+        public static AgentDirectiveResult None => new(false);
     }
 
     private static class StartModes
@@ -40,25 +40,27 @@ public sealed class Engine : IAsyncDisposable
     private readonly IScreenshotService? _screenshotService;
     private readonly CancellationTokenSource _cts = new();
     private readonly SessionTurnCoordinator _turnCoordinator;
+    private readonly string _defaultAgentType;
 
     // 默认工作目录
     private readonly string _defaultWorkDir;
 
     // sessionKey → 交互状态
     private readonly ConcurrentDictionary<string, InteractiveState> _states = new();
-    // sessionKey → 锁（保证同一会话串行处理）
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
+    // sessionKey → 命令锁（保证会话切换、模式切换等控制命令串行处理）
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _commandLocks = new();
     private int _disposeState;
 
     public Engine(string projectName, Func<string, IAgent> agentFactory, IEnumerable<IPlatform> platforms,
         string defaultWorkDir, SessionManager sessions, ILogger<Engine> logger, IScreenshotService? screenshotService = null,
-        TurnMergeOptions? turnMergeOptions = null)
+        TurnMergeOptions? turnMergeOptions = null, string? defaultAgentType = null)
     {
         _projectName = projectName;
         _agentFactory = agentFactory;
         _platforms = platforms.ToList();
         _sessions = sessions;
         _defaultWorkDir = Path.GetFullPath(defaultWorkDir);
+        _defaultAgentType = NormalizeAgentType(defaultAgentType);
         _logger = logger;
         _screenshotService = screenshotService;
         _turnCoordinator = new SessionTurnCoordinator(
@@ -114,24 +116,26 @@ public sealed class Engine : IAsyncDisposable
         }
         session.LastActiveAt = DateTimeOffset.UtcNow;
 
-        await _turnCoordinator.EnqueueAsync(platform, msg, session, directiveResult.Recognized, _cts.Token);
+        await _turnCoordinator.EnqueueAsync(platform, msg, session, _cts.Token);
     }
 
     /// <summary>消息处理核心逻辑。</summary>
-    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session, bool useSelectedAgentForStartup = false, CancellationToken executionCt = default)
+    private async Task ProcessMessageAsync(IPlatform platform, Message msg, SessionRecord session, CancellationToken executionCt = default)
     {
+        executionCt.ThrowIfCancellationRequested();
+
         var workDirNotice = EnsureSessionWorkDir(session);
         if (!string.IsNullOrWhiteSpace(workDirNotice))
-            await platform.ReplyAsync(msg.ReplyContext, workDirNotice, _cts.Token);
+            await platform.ReplyAsync(msg.ReplyContext, workDirNotice, executionCt);
 
         _logger.LogInformation("[{Platform}] 创建/获取 Agent 会话: {SessionKey}", platform.Name, msg.SessionKey);
-        var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session, useSelectedAgentForStartup);
+        var stateStart = await GetOrCreateStateAsync(msg.SessionKey, session, executionCt);
         var state = stateStart.State;
         state.StopRequested = false;
         _logger.LogInformation("[{Platform}] Agent 会话就绪: {SessionId}", platform.Name, state.AgentSession.SessionId);
 
         if (!string.IsNullOrWhiteSpace(stateStart.ConnectionNotice))
-            await platform.ReplyAsync(msg.ReplyContext, stateStart.ConnectionNotice, _cts.Token);
+            await platform.ReplyAsync(msg.ReplyContext, stateStart.ConnectionNotice, executionCt);
 
         // 启动 typing 指示器
         IDisposable? typing = null;
@@ -152,10 +156,10 @@ public sealed class Engine : IAsyncDisposable
                 _logger.LogWarning("检测到管道已关闭，重建会话: {SessionKey}", msg.SessionKey);
                 _states.TryRemove(msg.SessionKey, out _);
                 session.AgentSessionId = null;
-                var newStart = await GetOrCreateStateAsync(msg.SessionKey, session);
+                var newStart = await GetOrCreateStateAsync(msg.SessionKey, session, executionCt);
                 state = newStart.State;
                 if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
-                    await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, _cts.Token);
+                    await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, executionCt);
                 await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
             }
             _logger.LogInformation("[{Platform}] 消息已发送，开始等待 Agent 事件流...", platform.Name);
@@ -840,10 +844,22 @@ public sealed class Engine : IAsyncDisposable
         };
     }
 
+    private async Task<bool> ReplyIfTurnBusyAsync(IPlatform platform, Message msg, string text)
+    {
+        if (!_turnCoordinator.IsBusy(msg.SessionKey))
+            return false;
+
+        await platform.ReplyAsync(msg.ReplyContext, text, _cts.Token);
+        return true;
+    }
+
     /// <summary>/new [--project 路径] - 开始新会话（清空当前 AgentSessionId）。</summary>
     private async Task<bool> CmdNewAsync(IPlatform platform, Message msg, string[] args)
     {
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (await ReplyIfTurnBusyAsync(platform, msg, "当前有消息正在处理，无法创建新会话。"))
+            return true;
+
+        var sessionLock = _commandLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法创建新会话。", _cts.Token);
@@ -876,7 +892,7 @@ public sealed class Engine : IAsyncDisposable
             var session = _sessions.GetOrCreate(msg.SessionKey, platform.Name, msg.From, msg.FromName);
             if (workDir is not null)
                 session.ProjectKey = workDir;
-            session.AgentType = ClaudeAgentType;
+            session.AgentType = _defaultAgentType;
             session.AgentSessionId = null;
             session.PendingStartMode = null;
             session.PendingResumeSessionId = null;
@@ -981,10 +997,12 @@ public sealed class Engine : IAsyncDisposable
     }
 
     /// <summary>/continue - 继续当前工作目录最近一次 Agent 会话。</summary>
-    /// <summary>/continue - 继续当前工作目录最近一次 Agent 会话。</summary>
     private async Task<bool> CmdContinueAsync(IPlatform platform, Message msg)
     {
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (await ReplyIfTurnBusyAsync(platform, msg, "当前有消息正在处理。"))
+            return true;
+
+        var sessionLock = _commandLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理。", _cts.Token);
@@ -1071,7 +1089,10 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (await ReplyIfTurnBusyAsync(platform, msg, "当前有消息正在处理，无法切换会话。"))
+            return true;
+
+        var sessionLock = _commandLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法切换会话。", _cts.Token);
@@ -1173,7 +1194,10 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (await ReplyIfTurnBusyAsync(platform, msg, "当前有消息正在处理，无法切换模式。"))
+            return true;
+
+        var sessionLock = _commandLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法切换模式。", _cts.Token);
@@ -1224,7 +1248,10 @@ public sealed class Engine : IAsyncDisposable
             return true;
         }
 
-        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
+        if (await ReplyIfTurnBusyAsync(platform, msg, "当前有消息正在处理，无法切换目录。"))
+            return true;
+
+        var sessionLock = _commandLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(5)))
         {
             await platform.ReplyAsync(msg.ReplyContext, "当前有消息正在处理，无法切换目录。", _cts.Token);
@@ -1372,13 +1399,15 @@ public sealed class Engine : IAsyncDisposable
             IsGroup = request.Snapshot.IsGroup,
         };
 
-        return ProcessMessageAsync(request.Platform, message, request.Session, request.UseSelectedAgentForStartup, ct);
+        return ProcessMessageAsync(request.Platform, message, request.Session, ct);
     }
 
     // ─── 会话状态管理 ────────────────────────────────────────────
 
-    private async Task<StateStartResult> GetOrCreateStateAsync(string sessionKey, SessionRecord session, bool useSelectedAgentForStartup = false)
+    private async Task<StateStartResult> GetOrCreateStateAsync(string sessionKey, SessionRecord session, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
         if (_states.TryGetValue(sessionKey, out var existing) && existing.AgentSession is not null)
         {
             return new StateStartResult(existing, null);
@@ -1390,455 +1419,55 @@ public sealed class Engine : IAsyncDisposable
         var workDir = session.ProjectKey ?? _defaultWorkDir;
         var connectionNotice = GetConnectionNotice(session.PendingStartMode);
 
-        var startupAgentType = ResolveAgentTypeForStartup(session, useSelectedAgentForStartup);
+        var startupAgentType = ResolveAgentTypeForStartup(session);
         session.AgentType = startupAgentType;
 
-        IAgentSession agentSession;
-        if (string.Equals(session.PendingStartMode, StartModes.Continue, StringComparison.Ordinal))
+        IAgentSession? agentSession = null;
+        var stateRegistered = false;
+        try
         {
-            agentSession = await GetAgent(startupAgentType).ContinueSessionAsync(workDir, _cts.Token);
-        }
-        else
-        {
-            var resumeSessionId = string.Equals(session.PendingStartMode, StartModes.Resume, StringComparison.Ordinal)
-                ? session.PendingResumeSessionId ?? string.Empty
-                : string.Empty;
-            agentSession = await GetAgent(startupAgentType).StartSessionAsync(resumeSessionId, workDir, _cts.Token);
-        }
+            if (string.Equals(session.PendingStartMode, StartModes.Continue, StringComparison.Ordinal))
+            {
+                agentSession = await GetAgent(startupAgentType).ContinueSessionAsync(workDir, ct);
+            }
+            else
+            {
+                var resumeSessionId = string.Equals(session.PendingStartMode, StartModes.Resume, StringComparison.Ordinal)
+                    ? session.PendingResumeSessionId ?? string.Empty
+                    : string.Empty;
+                agentSession = await GetAgent(startupAgentType).StartSessionAsync(resumeSessionId, workDir, ct);
+            }
 
-        session.AgentSessionId = agentSession.SessionId;
-        session.PendingStartMode = null;
-        session.PendingResumeSessionId = null;
-        var state = new InteractiveState(agentSession);
-        _states[sessionKey] = state;
-        _sessions.Save();
-        return new StateStartResult(state, connectionNotice);
+            ct.ThrowIfCancellationRequested();
+
+            session.AgentSessionId = agentSession.SessionId;
+            session.PendingStartMode = null;
+            session.PendingResumeSessionId = null;
+            var state = new InteractiveState(agentSession);
+            _states[sessionKey] = state;
+            stateRegistered = true;
+            _sessions.Save();
+            return new StateStartResult(state, connectionNotice);
+        }
+        catch
+        {
+            if (agentSession is not null && !stateRegistered)
+            {
+                try
+                {
+                    await agentSession.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "释放未注册 Agent 会话失败: sessionKey={SessionKey}", sessionKey);
+                }
+            }
+            throw;
+        }
     }
 
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "...";
-
-    private string ResolveProjectPath(string rawPath) => Path.IsPathRooted(rawPath)
-        ? Path.GetFullPath(rawPath)
-        : Path.GetFullPath(Path.Combine(_defaultWorkDir, rawPath));
-
-    private AgentDirectiveResult TryApplyAgentDirective(SessionRecord session, ref Message msg)
-    {
-        var content = msg.Content.TrimStart();
-        if (!content.StartsWith('#'))
-            return AgentDirectiveResult.None;
-
-        var firstSpace = content.IndexOf(' ');
-        var directive = (firstSpace >= 0 ? content[..firstSpace] : content).Trim();
-        var remaining = firstSpace >= 0 ? content[(firstSpace + 1)..].TrimStart() : string.Empty;
-
-        var targetAgent = directive.ToLowerInvariant() switch
-        {
-            "#claude" => ClaudeAgentType,
-            "#codex" => CodexAgentType,
-            _ => null,
-        };
-
-        if (targetAgent is null)
-            return AgentDirectiveResult.None;
-
-        if (string.IsNullOrWhiteSpace(remaining) && string.IsNullOrWhiteSpace(session.AgentSessionId))
-            remaining = targetAgent == CodexAgentType ? "开始一个新的 Codex 会话。" : "开始一个新的 Claude 会话。";
-
-        var changed = !string.Equals(session.AgentType, targetAgent, StringComparison.OrdinalIgnoreCase);
-        session.AgentType = targetAgent;
-        session.AgentSessionId = null;
-        session.PendingStartMode = null;
-        session.PendingResumeSessionId = null;
-        _sessions.Save();
-
-        msg = new Message
-        {
-            SessionKey = msg.SessionKey,
-            From = msg.From,
-            FromName = msg.FromName,
-            Content = remaining,
-            Attachments = msg.Attachments,
-            ReplyContext = msg.ReplyContext,
-            IsGroup = msg.IsGroup,
-            ReceivedAt = msg.ReceivedAt,
-        };
-
-        return new AgentDirectiveResult(true, changed);
-    }
-
-    private IAgent GetAgent(string agentType)
-    {
-        agentType = NormalizeAgentType(agentType);
-        if (_agents.TryGetValue(agentType, out var existing))
-            return existing;
-
-        var created = _agentFactory(agentType);
-        _agents[agentType] = created;
-        return created;
-    }
-
-    private IAgent GetAgent(SessionRecord session) => GetAgent(session.AgentType);
-
-    private static List<NativeSessionInfo> GetNativeSessions(string agentType, string workDir)
-    {
-        return agentType switch
-        {
-            CodexAgentType => CodexNativeSession.GetSessions(workDir),
-            _ => ClaudeNativeSession.GetSessions(workDir),
-        };
-    }
-
-    private static string GetConnectionNotice(string? pendingStartMode) =>
-        IsRecoveryStartMode(pendingStartMode) ? "🎉 客户端已恢复" : "🎉 客户端已连接";
-
-    private static string NormalizeAgentType(string? agentType) =>
-        string.Equals(agentType, CodexAgentType, StringComparison.OrdinalIgnoreCase)
-            ? CodexAgentType
-            : ClaudeAgentType;
-
-    private static bool IsRecoveryStartMode(string? pendingStartMode) =>
-        string.Equals(pendingStartMode, StartModes.Continue, StringComparison.Ordinal) ||
-        string.Equals(pendingStartMode, StartModes.Resume, StringComparison.Ordinal);
-
-    private static string ResolveAgentTypeForStartup(SessionRecord session, bool useSelectedAgentForStartup)
-    {
-        var selectedAgentType = NormalizeAgentType(session.AgentType);
-        if (IsRecoveryStartMode(session.PendingStartMode))
-            return selectedAgentType;
-
-        return useSelectedAgentForStartup
-            ? selectedAgentType
-            : ClaudeAgentType;
-    }
-
-    private static string GetAgentDisplayName(string? agentType) =>
-        NormalizeAgentType(agentType) == CodexAgentType ? "Codex" : "Claude";
-
-    private static bool IsCodexAgent(string? agentType) =>
-        NormalizeAgentType(agentType) == CodexAgentType;
-
-    private static string GetModeFieldLabel(string? agentType) =>
-        IsCodexAgent(agentType) ? "审批模式" : "权限模式";
-
-    private static string GetModeDisplayName(string? agentType, string mode)
-    {
-        if (TryGetCodexModePresentation(agentType, mode, out var displayName, out _))
-            return displayName;
-
-        ModeDisplayNames.TryGetValue(mode, out var display);
-        return display ?? mode;
-    }
-
-    private static string GetEffectiveModeForAgent(string? agentType, string mode)
-    {
-        if (!IsCodexAgent(agentType))
-            return mode;
-
-        return NormalizeCodexMode(mode);
-    }
-
-    private static void AppendModeOptions(System.Text.StringBuilder sb, string? agentType)
-    {
-        var options = IsCodexAgent(agentType)
-            ? new[]
-            {
-                "  `default` - 映射到 `on-request + workspace-write`",
-                "  `acceptedits` - 当前等价于 `default`，同样映射到 `on-request + workspace-write`",
-                "  `plan` - 映射到 `untrusted + read-only`",
-                "  `yolo` - 映射到 `never + danger-full-access`",
-            }
-            : new[]
-            {
-                "  `default` - 默认 (每次操作需确认)",
-                "  `acceptedits` - 自动接受编辑",
-                "  `plan` - 规划模式 (只读)",
-                "  `yolo` - 自动批准所有操作",
-            };
-
-        foreach (var option in options)
-            sb.AppendLine(option);
-    }
-
-    private static string GetSandboxDisplayName(string? agentType, string mode)
-    {
-        if (TryGetCodexModePresentation(agentType, mode, out _, out var sandboxDisplay))
-            return sandboxDisplay;
-
-        return string.Empty;
-    }
-
-    private static string NormalizeCodexMode(string mode) =>
-        mode.ToLowerInvariant() switch
-        {
-            "acceptedits" or "accept-edits" or "accept_edits" or "default" or "on-request" => "on-request",
-            "plan" or "untrusted" => "untrusted",
-            "bypasspermissions" or "bypass-permissions" or "yolo" or "auto" or "never" => "never",
-            _ => mode,
-        };
-
-    private static bool TryGetCodexModePresentation(string? agentType, string mode, out string displayName, out string sandboxDisplay)
-    {
-        if (!IsCodexAgent(agentType))
-        {
-            displayName = string.Empty;
-            sandboxDisplay = string.Empty;
-            return false;
-        }
-
-        var effectiveMode = NormalizeCodexMode(mode);
-        displayName = effectiveMode switch
-        {
-            "on-request" => "on-request (按需审批)",
-            "untrusted" => "untrusted (只读规划)",
-            "never" => "never (自动批准)",
-            _ => effectiveMode,
-        };
-
-        sandboxDisplay = effectiveMode switch
-        {
-            "untrusted" => "read-only",
-            "never" => "danger-full-access",
-            _ => "workspace-write",
-        };
-
-        return true;
-    }
-
-    private string GetDisplaySessionId(string sessionKey, SessionRecord session)
-    {
-        if (_states.TryGetValue(sessionKey, out var state))
-            return state.AgentSession.SessionId;
-
-        return session.PendingStartMode switch
-        {
-            StartModes.Continue => "(待恢复最近会话)",
-            StartModes.Resume when !string.IsNullOrWhiteSpace(session.PendingResumeSessionId) => session.PendingResumeSessionId!,
-            _ => session.AgentSessionId switch
-            {
-                { Length: > 0 } sid => sid,
-                _ => "(未启动)",
-            },
-        };
-    }
-
-    private static bool TryEnsureProjectDirectory(string targetDir, out bool createdDirectory, out string? error)
-    {
-        createdDirectory = !Directory.Exists(targetDir);
-        error = null;
-
-        try
-        {
-            Directory.CreateDirectory(targetDir);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            createdDirectory = false;
-            error = ex.Message;
-            return false;
-        }
-    }
-
-    private static Message NormalizeFileCommand(Message msg)
-    {
-        var trimmed = msg.Content.TrimStart();
-        if (!trimmed.StartsWith("/file", StringComparison.OrdinalIgnoreCase))
-            return msg;
-
-        var payload = trimmed.Length > 5 ? trimmed[5..].TrimStart() : string.Empty;
-        if (string.IsNullOrWhiteSpace(payload))
-            payload = "请生成用户需要的文件，并按要求返回文件路径。";
-
-        return new Message
-        {
-            SessionKey = msg.SessionKey,
-            From = msg.From,
-            FromName = msg.FromName,
-            Content = BuildFileOutputPrompt(payload),
-            ExpectFileOutput = true,
-            Attachments = msg.Attachments,
-            ReplyContext = msg.ReplyContext,
-            IsGroup = msg.IsGroup,
-            ReceivedAt = msg.ReceivedAt,
-        };
-    }
-
-    private static string BuildFileOutputPrompt(string payload)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine(payload.Trim());
-        builder.AppendLine();
-        builder.AppendLine("补充要求：");
-        builder.AppendLine("- 本轮需要产出文件。所有产物默认写到 output/ 目录；如需子目录，也必须放在 output/ 下。");
-        builder.AppendLine("- 文件生成完成后，请在回复末尾输出一个固定区块。");
-        builder.AppendLine("- 格式严格如下：");
-        builder.AppendLine();
-        builder.AppendLine("[FILES]");
-        builder.AppendLine("output/example.ext");
-        builder.AppendLine("output/subdir/");
-        builder.AppendLine("[/FILES]");
-        builder.AppendLine();
-        builder.AppendLine("- 只填写真实已生成的文件路径。每行一个路径。");
-        builder.AppendLine("- 不要在其他正文位置混杂文件路径说明。");
-        return builder.ToString().TrimEnd();
-    }
-
-    private async Task SendFileOutputsAsync(IPlatform platform, object replyContext, string workDir, string resultText, CancellationToken ct)
-    {
-        var extraction = ExtractFileOutputPaths(workDir, resultText);
-        if (extraction.ValidPaths.Count == 0)
-        {
-            await platform.ReplyAsync(replyContext, extraction.HasFilesBlock
-                ? "⚠️ 检测到了 [FILES] 区块，但未找到可发送的有效文件路径。"
-                : "⚠️ 未检测到有效的 [FILES] 区块，请在回复末尾按协议返回文件路径。", ct);
-        }
-
-        if (extraction.InvalidEntries.Count > 0)
-        {
-            var invalidSummary = string.Join("\n", extraction.InvalidEntries.Select(item => $"- {item}"));
-            await platform.ReplyAsync(replyContext, $"⚠️ 以下文件未发送：\n{invalidSummary}", ct);
-        }
-
-        var sentFiles = 0;
-        var sentImages = 0;
-        foreach (var filePath in extraction.ValidPaths)
-        {
-            try
-            {
-                if (ImageExtensions.Contains(Path.GetExtension(filePath)))
-                {
-                    if (platform is IImageSender imageSender)
-                    {
-                        await imageSender.SendImageAsync(replyContext, filePath, ct);
-                        sentImages++;
-                    }
-                    else
-                    {
-                        await platform.ReplyAsync(replyContext, $"当前平台 `{platform.Name}` 不支持发送图片：`{filePath}`", ct);
-                    }
-                }
-                else
-                {
-                    if (platform is IFileSender fileSender)
-                    {
-                        await fileSender.SendFileAsync(replyContext, filePath, ct);
-                        sentFiles++;
-                    }
-                    else
-                    {
-                        await platform.ReplyAsync(replyContext, $"当前平台 `{platform.Name}` 不支持发送文件：`{filePath}`", ct);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "发送 /file 产物失败: path={Path}", filePath);
-                await platform.ReplyAsync(replyContext, $"发送文件失败：`{filePath}` - {ex.Message}", ct);
-            }
-        }
-
-        if (sentFiles > 0 || sentImages > 0)
-        {
-            await platform.ReplyAsync(replyContext, $"📦 已发送 {sentFiles} 个文件，{sentImages} 张图片。", ct);
-        }
-    }
-
-    private static FileOutputExtractionResult ExtractFileOutputPaths(string workDir, string resultText)
-    {
-        if (string.IsNullOrWhiteSpace(resultText))
-            return new FileOutputExtractionResult(false, [], []);
-
-        var match = FilesBlockRegex.Match(resultText);
-        if (!match.Success)
-            return new FileOutputExtractionResult(false, [], []);
-
-        var allowedRoots = new[]
-        {
-            Path.GetFullPath(workDir),
-            Path.GetFullPath(Path.Combine(workDir, "output")),
-            Path.GetFullPath(Path.Combine(workDir, "output", "artifacts")),
-        }.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-
-        var results = new List<string>();
-        var invalidEntries = new List<string>();
-        foreach (var rawLine in match.Groups["paths"].Value.Replace("\r\n", "\n").Split('\n'))
-        {
-            var trimmed = rawLine.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed))
-                continue;
-
-            var candidate = Path.IsPathRooted(trimmed)
-                ? Path.GetFullPath(trimmed)
-                : Path.GetFullPath(Path.Combine(workDir, trimmed));
-
-            if (!allowedRoots.Any(root => candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase)))
-            {
-                invalidEntries.Add($"{trimmed} (超出允许目录)");
-                continue;
-            }
-
-            if (Directory.Exists(candidate))
-            {
-                foreach (var child in Directory.EnumerateFiles(candidate, "*", SearchOption.AllDirectories))
-                {
-                    var info = new FileInfo(child);
-                    if (info.Length > 30L * 1024 * 1024)
-                    {
-                        invalidEntries.Add($"{Path.GetRelativePath(workDir, child)} (超过 30 MB)");
-                        continue;
-                    }
-
-                    results.Add(Path.GetFullPath(child));
-                }
-                continue;
-            }
-
-            if (!File.Exists(candidate))
-            {
-                invalidEntries.Add($"{trimmed} (文件不存在)");
-                continue;
-            }
-
-            var fileInfo = new FileInfo(candidate);
-            if (fileInfo.Length > 30L * 1024 * 1024)
-            {
-                invalidEntries.Add($"{trimmed} (超过 30 MB)");
-                continue;
-            }
-
-            results.Add(candidate);
-        }
-
-        return new FileOutputExtractionResult(true, results.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), invalidEntries);
-    }
-
-    private static string RemoveFilesBlock(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return string.Empty;
-
-        var stripped = FilesBlockRegex.Replace(text, string.Empty);
-        stripped = Regex.Replace(stripped, @"\n{3,}", "\n\n");
-        return stripped.Trim();
-    }
-
-    private static string ComposeFullAgentOutput(string streamedText, string resultText)
-    {
-        var streamed = streamedText?.Trim() ?? string.Empty;
-        var result = resultText?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(streamed))
-            return result;
-        if (string.IsNullOrWhiteSpace(result))
-            return streamed;
-        if (string.Equals(streamed, result, StringComparison.Ordinal))
-            return result;
-        if (streamed.Contains(result, StringComparison.Ordinal))
-            return streamed;
-        if (result.Contains(streamed, StringComparison.Ordinal))
-            return result;
-        return streamed + "\n\n" + result;
-    }
 
     private static string BuildCompletedStatusMessage(string content, bool success)
     {
@@ -2131,14 +1760,11 @@ public sealed class Engine : IAsyncDisposable
     public IReadOnlyList<SessionStatus> GetActiveStatuses()
     {
         var result = new List<SessionStatus>();
-        foreach (var (sessionKey, _) in _sessionLocks)
+        foreach (var session in _sessions.GetAll())
         {
-            var session = _sessions.GetActive(sessionKey);
-            if (session is null) continue;
-
-            var isProcessing = _sessionLocks.TryGetValue(sessionKey, out var sem) && sem.CurrentCount == 0;
+            var isProcessing = _turnCoordinator.IsBusy(session.SessionKey);
             result.Add(new SessionStatus(
-                sessionKey,
+                session.SessionKey,
                 session.FromName ?? session.From,
                 session.Platform,
                 session.AgentType,
@@ -2176,9 +1802,9 @@ public sealed class Engine : IAsyncDisposable
                 await agent.DisposeAsync();
 
             // 清理所有 sessionLock
-            foreach (var (_, semaphore) in _sessionLocks)
+            foreach (var (_, semaphore) in _commandLocks)
                 semaphore.Dispose();
-            _sessionLocks.Clear();
+            _commandLocks.Clear();
         }
         finally
         {

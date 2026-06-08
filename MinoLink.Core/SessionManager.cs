@@ -12,13 +12,17 @@ public sealed class SessionManager
 {
     private readonly ConcurrentDictionary<string, SessionRecord> _records = new();
     private readonly string _storageFilePath;
+    private readonly string _defaultAgentType;
     private readonly object _ioLock = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    public SessionManager(string storageFilePath)
+    public SessionManager(string storageFilePath, string defaultAgentType = "claudecode")
     {
         _storageFilePath = storageFilePath;
+        _defaultAgentType = string.Equals(defaultAgentType, "codex", StringComparison.OrdinalIgnoreCase)
+            ? "codex"
+            : "claudecode";
         Load();
     }
 
@@ -32,6 +36,7 @@ public sealed class SessionManager
             return new SessionRecord
             {
                 SessionKey = sessionKey,
+                AgentType = _defaultAgentType,
                 Platform = platform,
                 From = from,
                 FromName = fromName,
@@ -50,6 +55,9 @@ public sealed class SessionManager
         _records.TryGetValue(sessionKey, out var record);
         return record;
     }
+
+    public IReadOnlyList<SessionRecord> GetAll() =>
+        _records.Values.OrderByDescending(record => record.LastActiveAt).ToArray();
 
     /// <summary>持久化当前状态到磁盘。</summary>
     public void Save()
@@ -103,7 +111,7 @@ public sealed class SessionManager
                     _records[key] = new SessionRecord
                     {
                         SessionKey = key,
-                        AgentType = string.IsNullOrWhiteSpace(sr.AgentType) ? "claudecode" : sr.AgentType,
+                        AgentType = NormalizeAgentType(sr.AgentType),
                         ProjectKey = sr.ProjectKey,
                         PendingStartMode = sr.PendingStartMode,
                         PendingResumeSessionId = sr.PendingResumeSessionId,
@@ -123,7 +131,7 @@ public sealed class SessionManager
             foreach (var user in users.EnumerateObject())
             {
                 string? projectKey = null, platform = null, from = null, fromName = null;
-                var agentType = "claudecode";
+                var agentType = _defaultAgentType;
                 var lastActive = DateTimeOffset.UtcNow;
 
                 if (user.Value.TryGetProperty("Sessions", out var sessions) &&
@@ -141,6 +149,7 @@ public sealed class SessionManager
                         if (s.TryGetProperty("Platform", out var pl)) platform = pl.GetString();
                         if (s.TryGetProperty("From", out var fr)) from = fr.GetString();
                         if (s.TryGetProperty("FromName", out var fn)) fromName = fn.GetString();
+                        if (s.TryGetProperty("AgentType", out var at)) agentType = at.GetString() ?? _defaultAgentType;
                         if (s.TryGetProperty("LastActiveAt", out var la) &&
                             DateTimeOffset.TryParse(la.GetString(), out var laDto))
                             lastActive = laDto;
@@ -150,7 +159,7 @@ public sealed class SessionManager
                 _records[user.Name] = new SessionRecord
                 {
                     SessionKey = user.Name,
-                    AgentType = agentType,
+                    AgentType = NormalizeAgentType(agentType),
                     ProjectKey = projectKey,
                     Platform = platform,
                     From = from ?? user.Name,
@@ -180,4 +189,11 @@ public sealed class SessionManager
         public string? FromName { get; set; }
         public DateTimeOffset LastActiveAt { get; set; }
     }
+
+    private string NormalizeAgentType(string? agentType) =>
+        string.Equals(agentType, "codex", StringComparison.OrdinalIgnoreCase)
+            ? "codex"
+            : string.IsNullOrWhiteSpace(agentType)
+                ? _defaultAgentType
+                : "claudecode";
 }

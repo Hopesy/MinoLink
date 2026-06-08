@@ -3,15 +3,15 @@ using System.Text.Json.Nodes;
 using MinoLink.Core.Interfaces;
 using MinoLink.Core.Models;
 
-namespace MinoLink.Services;
+namespace MinoLink.Core.Services;
 
-public sealed class ConfigService : IConfigService
+public sealed class JsonConfigService : IConfigService
 {
     private readonly string _configPath;
     private readonly object _lock = new();
     private MinoLinkConfig _cached;
 
-    public ConfigService(string configPath, MinoLinkConfig initial)
+    public JsonConfigService(string configPath, MinoLinkConfig initial)
     {
         _configPath = configPath;
         _cached = initial;
@@ -57,10 +57,15 @@ public sealed class ConfigService : IConfigService
                 ["AppId"] = feishu.AppId,
                 ["AppSecret"] = feishu.AppSecret,
                 ["VerificationToken"] = feishu.VerificationToken,
+                ["ReactionEmoji"] = feishu.ReactionEmoji,
             };
         }
 
         json["MinoLink"] = minoLink;
+
+        var dir = Path.GetDirectoryName(_configPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
 
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(_configPath, json.ToJsonString(options));

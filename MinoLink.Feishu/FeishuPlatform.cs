@@ -25,8 +25,8 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ConcurrentDictionary<string, string> _userNameCache = new();
 
-    /// <summary>Emoji reaction 表情类型，默认 "OnIt"。</summary>
-    private readonly string _reactionEmoji = "OnIt";
+    /// <summary>Emoji reaction 表情类型；null 表示禁用。</summary>
+    private readonly string? _reactionEmoji;
 
     private Func<IPlatform, Message, Task>? _messageHandler;
 
@@ -38,6 +38,9 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
         _options = options;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _reactionEmoji = string.Equals(options.ReactionEmoji, "none", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : string.IsNullOrWhiteSpace(options.ReactionEmoji) ? "OnIt" : options.ReactionEmoji;
     }
 
     public Task StartAsync(Func<IPlatform, Message, Task> messageHandler, CancellationToken ct)
@@ -238,6 +241,9 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     public IDisposable StartTyping(object replyContext)
     {
         var ctx = (FeishuReplyContext)replyContext;
+        if (string.IsNullOrWhiteSpace(_reactionEmoji))
+            return NullDisposable.Instance;
+
         var reactionId = AddReaction(ctx.MessageId);
         return new ReactionDisposable(this, ctx.MessageId, reactionId);
     }
@@ -250,7 +256,7 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
             {
                 ReactionType = new PostImV1MessagesByMessageIdReactionsBodyDto.Emoji
                 {
-                    EmojiType = _reactionEmoji,
+                    EmojiType = _reactionEmoji!,
                 },
             };
             var result = _api.PostImV1MessagesByMessageIdReactionsAsync(messageId, dto).GetAwaiter().GetResult();
@@ -282,6 +288,15 @@ public sealed class FeishuPlatform : IPlatform, ICardSender, IMessageUpdater, IT
     private sealed class ReactionDisposable(FeishuPlatform platform, string messageId, string? reactionId) : IDisposable
     {
         public void Dispose() => platform.RemoveReaction(messageId, reactionId);
+    }
+
+    private sealed class NullDisposable : IDisposable
+    {
+        public static readonly NullDisposable Instance = new();
+
+        public void Dispose()
+        {
+        }
     }
 
     private async Task<string?> UploadImageAsync(string filePath, CancellationToken ct)

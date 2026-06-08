@@ -17,11 +17,11 @@ internal sealed class TurnRuntime(string sessionKey)
 
     public SessionRecord? Session { get; set; }
 
-    public bool UseSelectedAgentForStartup { get; set; }
-
     public CancellationTokenSource? WindowCts { get; set; }
 
     public CancellationTokenSource? ExecutionCts { get; set; }
+
+    public long ExecutionGeneration { get; set; }
 
     public void Reset()
     {
@@ -34,7 +34,6 @@ internal sealed class TurnRuntime(string sessionKey)
         Aggregate = null;
         Platform = null;
         Session = null;
-        UseSelectedAgentForStartup = false;
         State = TurnRuntimeState.Idle;
     }
 }

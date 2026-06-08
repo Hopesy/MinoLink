@@ -83,8 +83,4 @@ public sealed class ClaudeCodeAgent : IAgent
         "bypasspermissions" or "bypass-permissions" or "yolo" or "auto" => "bypassPermissions",
         _ => "default",
     };
-
-    /// <summary>注册到全局 Agent 注册表。</summary>
-    public static void Register(ILoggerFactory loggerFactory) =>
-        AgentRegistry.Register("claudecode", opts => new ClaudeCodeAgent(opts, loggerFactory.CreateLogger<ClaudeCodeAgent>()));
 }

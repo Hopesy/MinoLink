@@ -15,6 +15,7 @@ using MinoLink.ClaudeCode;
 using MinoLink.Codex;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
+using MinoLink.Core.Logging;
 using MinoLink.Core.Models;
 using MinoLink.Core.Services;
 using MinoLink.Desktop.Services;
@@ -163,7 +164,7 @@ public partial class App : System.Windows.Application
 
         var defaultWorkDir = ResolveDefaultWorkDir(config.Agent.WorkDir);
 
-        builder.Services.AddSingleton<IConfigService>(new ConfigService(configPath, config));
+        builder.Services.AddSingleton<IConfigService>(new JsonConfigService(configPath, config));
         builder.Services.AddSingleton<IAppVersionProvider, AppVersionProvider>();
         builder.Services.AddSingleton<GitHubReleaseUpdateResolver>();
 
@@ -201,7 +202,7 @@ public partial class App : System.Windows.Application
         });
 
         var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
-        builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
+        builder.Services.AddSingleton(new SessionManager(sessionStoragePath, config.Agent.Type));
         builder.Services.AddSingleton(new NativeSessionCatalogService(
         [
             new ClaudeNativeSessionProjectSource(),
@@ -217,7 +218,8 @@ public partial class App : System.Windows.Application
             var sessions = sp.GetRequiredService<SessionManager>();
             var logger = sp.GetRequiredService<ILogger<Engine>>();
             var screenshotService = sp.GetRequiredService<IScreenshotService>();
-            return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger, screenshotService);
+            return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger, screenshotService,
+                defaultAgentType: config.Agent.Type);
         });
 
         if (config.Feishu is { AppId: not null and not "" })
@@ -227,6 +229,7 @@ public partial class App : System.Windows.Application
                 AppId = config.Feishu.AppId,
                 AppSecret = config.Feishu.AppSecret ?? "",
                 VerificationToken = config.Feishu.VerificationToken ?? "",
+                ReactionEmoji = config.Feishu.ReactionEmoji ?? "OnIt",
             };
             builder.Services.AddFeishuPlatform(feishuOpts);
             builder.Services.AddSingleton<IPlatform>(sp => sp.GetRequiredService<FeishuPlatform>());

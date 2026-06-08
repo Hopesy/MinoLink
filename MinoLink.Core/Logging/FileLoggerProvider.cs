@@ -1,10 +1,9 @@
 using System.Collections.Concurrent;
-using System.IO;
 using Microsoft.Extensions.Logging;
 
-namespace MinoLink.Desktop.Services;
+namespace MinoLink.Core.Logging;
 
-internal sealed class FileLoggerProvider : ILoggerProvider
+public sealed class FileLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileLogSink _sink;
@@ -59,7 +58,9 @@ internal sealed class FileLogger : ILogger
     private sealed class NullScope : IDisposable
     {
         public static readonly NullScope Instance = new();
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }
 
@@ -90,7 +91,7 @@ internal sealed class FileLogSink : IDisposable
             _writer.Write(logLevel);
             _writer.Write("] [");
             _writer.Write(categoryName);
-            _writer.Write("]");
+            _writer.Write(']');
 
             if (eventId.Id != 0 || !string.IsNullOrWhiteSpace(eventId.Name))
             {

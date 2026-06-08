@@ -5,11 +5,10 @@ using MinoLink.ClaudeCode;
 using MinoLink.Codex;
 using MinoLink.Core;
 using MinoLink.Core.Interfaces;
+using MinoLink.Core.Logging;
 using MinoLink.Core.Models;
 using MinoLink.Core.Services;
 using MinoLink.Feishu;
-using MinoLink.Logging;
-using MinoLink.Services;
 using MinoLink.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -39,7 +38,7 @@ var defaultWorkDir = ProgramHelpers.ResolveDefaultWorkDir(config.Agent.WorkDir);
 
 // 注册 ConfigService
 var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-builder.Services.AddSingleton<IConfigService>(new ConfigService(configPath, config));
+builder.Services.AddSingleton<IConfigService>(new JsonConfigService(configPath, config));
 
 // 注册 Agent
 builder.Services.AddSingleton<Func<string, IAgent>>(sp => agentType =>
@@ -60,7 +59,7 @@ builder.Services.AddSingleton<Func<string, IAgent>>(sp => agentType =>
 
 // 注册 SessionManager
 var sessionStoragePath = Path.Combine(AppContext.BaseDirectory, "data", "sessions.json");
-builder.Services.AddSingleton(new SessionManager(sessionStoragePath));
+builder.Services.AddSingleton(new SessionManager(sessionStoragePath, config.Agent.Type));
 builder.Services.AddSingleton(new NativeSessionCatalogService(
 [
     new ClaudeNativeSessionProjectSource(),
@@ -74,7 +73,8 @@ builder.Services.AddSingleton<Engine>(sp =>
     var platforms = sp.GetServices<IPlatform>();
     var sessions = sp.GetRequiredService<SessionManager>();
     var logger = sp.GetRequiredService<ILogger<Engine>>();
-    return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger);
+    return new Engine(config.ProjectName ?? "default", agentFactory, platforms, defaultWorkDir, sessions, logger,
+        defaultAgentType: config.Agent.Type);
 });
 
 // 注册飞书平台
@@ -85,6 +85,7 @@ if (config.Feishu is { AppId: not null and not "" })
         AppId = config.Feishu.AppId,
         AppSecret = config.Feishu.AppSecret ?? "",
         VerificationToken = config.Feishu.VerificationToken ?? "",
+        ReactionEmoji = config.Feishu.ReactionEmoji ?? "OnIt",
     };
     builder.Services.AddFeishuPlatform(feishuOpts);
 

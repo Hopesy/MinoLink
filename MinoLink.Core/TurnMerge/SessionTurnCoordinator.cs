@@ -13,7 +13,7 @@ internal sealed class SessionTurnCoordinator(
 {
     private readonly ConcurrentDictionary<string, TurnRuntime> _runtimes = new();
 
-    public async Task EnqueueAsync(IPlatform platform, Message msg, SessionRecord session, bool useSelectedAgentForStartup, CancellationToken ct)
+    public async Task EnqueueAsync(IPlatform platform, Message msg, SessionRecord session, CancellationToken ct)
     {
         var runtime = _runtimes.GetOrAdd(msg.SessionKey, static key => new TurnRuntime(key));
         CancellationToken delayToken;
@@ -24,8 +24,6 @@ internal sealed class SessionTurnCoordinator(
         {
             runtime.Platform = platform;
             runtime.Session = session;
-            runtime.UseSelectedAgentForStartup = useSelectedAgentForStartup;
-
             if (runtime.State is TurnRuntimeState.Idle || runtime.Aggregate is null)
             {
                 runtime.Aggregate = new TurnAggregate(msg);
@@ -73,7 +71,7 @@ internal sealed class SessionTurnCoordinator(
         if (interruptCurrentExecution)
             await interruptAsync(msg.SessionKey);
 
-        _ = Task.Run(() => FlushTurnWindowAsync(runtime, delay, delayToken), CancellationToken.None);
+        _ = Task.Run(() => FlushTurnWindowAsync(runtime, delay, delayToken, ct), CancellationToken.None);
     }
 
     public Task<bool> ResetAsync(string sessionKey)
@@ -88,7 +86,20 @@ internal sealed class SessionTurnCoordinator(
         return Task.FromResult(false);
     }
 
-    private async Task FlushTurnWindowAsync(TurnRuntime runtime, TimeSpan delay, CancellationToken delayToken)
+    public bool IsBusy(string sessionKey)
+    {
+        if (!_runtimes.TryGetValue(sessionKey, out var runtime))
+            return false;
+
+        lock (runtime.SyncRoot)
+        {
+            return runtime.State is TurnRuntimeState.Buffering
+                or TurnRuntimeState.Running
+                or TurnRuntimeState.RestartPending;
+        }
+    }
+
+    private async Task FlushTurnWindowAsync(TurnRuntime runtime, TimeSpan delay, CancellationToken delayToken, CancellationToken executionParentToken)
     {
         try
         {
@@ -100,6 +111,8 @@ internal sealed class SessionTurnCoordinator(
         }
 
         TurnExecutionRequest? request = null;
+        CancellationTokenSource? executionCts = null;
+        long executionGeneration = 0;
 
         lock (runtime.SyncRoot)
         {
@@ -115,11 +128,13 @@ internal sealed class SessionTurnCoordinator(
             }
 
             var snapshot = runtime.Aggregate.CreateSnapshot();
-            request = new TurnExecutionRequest(runtime.Platform, runtime.Session, snapshot, runtime.UseSelectedAgentForStartup);
+            request = new TurnExecutionRequest(runtime.Platform, runtime.Session, snapshot);
             runtime.State = TurnRuntimeState.Running;
             runtime.WindowCts.Dispose();
             runtime.WindowCts = null;
-            runtime.ExecutionCts = new CancellationTokenSource();
+            executionCts = CancellationTokenSource.CreateLinkedTokenSource(executionParentToken);
+            runtime.ExecutionCts = executionCts;
+            executionGeneration = ++runtime.ExecutionGeneration;
 
             logger.LogInformation("TurnExecutionStarted: sessionKey={SessionKey}, revision={Revision}",
                 runtime.SessionKey, snapshot.Revision);
@@ -127,26 +142,41 @@ internal sealed class SessionTurnCoordinator(
 
         try
         {
-            await executeAsync(request, runtime.ExecutionCts!.Token);
+            await executeAsync(request, executionCts!.Token);
         }
         finally
         {
+            var disposeExecutionCts = executionCts;
+            var staleExecution = false;
             lock (runtime.SyncRoot)
             {
-                runtime.ExecutionCts?.Dispose();
-                runtime.ExecutionCts = null;
+                if (runtime.ExecutionGeneration != executionGeneration)
+                {
+                    logger.LogInformation(
+                        "TurnStaleExecutionCompleted: sessionKey={SessionKey}, generation={Generation}, currentGeneration={CurrentGeneration}",
+                        runtime.SessionKey,
+                        executionGeneration,
+                        runtime.ExecutionGeneration);
+                    staleExecution = true;
+                }
+                else if (ReferenceEquals(runtime.ExecutionCts, executionCts))
+                {
+                    runtime.ExecutionCts = null;
+                }
 
-                if (runtime.State == TurnRuntimeState.RestartPending)
+                if (!staleExecution && runtime.State == TurnRuntimeState.RestartPending)
                 {
                     logger.LogInformation("TurnRestartScheduled: sessionKey={SessionKey}", runtime.SessionKey);
                 }
-                else
+                else if (!staleExecution)
                 {
                     runtime.Reset();
                     _runtimes.TryRemove(runtime.SessionKey, out _);
                     logger.LogInformation("TurnCompleted: sessionKey={SessionKey}", runtime.SessionKey);
                 }
             }
+
+            disposeExecutionCts?.Dispose();
         }
     }
 }
@@ -154,5 +184,4 @@ internal sealed class SessionTurnCoordinator(
 internal sealed record TurnExecutionRequest(
     IPlatform Platform,
     SessionRecord Session,
-    TurnSnapshot Snapshot,
-    bool UseSelectedAgentForStartup);
+    TurnSnapshot Snapshot);
