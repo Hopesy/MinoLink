@@ -143,6 +143,44 @@ public sealed class ClaudeSession : IAgentSession
         }
     }
 
+    public async Task<AgentGoalCommandResult> HandleGoalAsync(AgentGoalCommand command, CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return AgentGoalCommandResult.Unsupported("Claude 会话未启动，无法操作 goal。");
+        if (command.Action is AgentGoalAction.Set && string.IsNullOrWhiteSpace(command.Objective))
+        {
+            return AgentGoalCommandResult.Unsupported("Claude Code `/goal` 当前只支持查看、设置和清除；暂停/恢复仅 Codex typed goal 支持。");
+        }
+
+        var slashCommand = BuildGoalSlashCommand(command);
+        await SendSlashCommandAsync(slashCommand, ct);
+        return AgentGoalCommandResult.TurnStarted();
+    }
+
+    private async Task SendSlashCommandAsync(string content, CancellationToken ct)
+    {
+        var msg = new
+        {
+            type = "user",
+            message = new { role = "user", content },
+        };
+
+        var json = JsonSerializer.Serialize(msg);
+        _logger.LogInformation("→ Claude slash command: {Command}", content);
+        await WriteLineAsync(json, ct);
+    }
+
+    private static string BuildGoalSlashCommand(AgentGoalCommand command)
+    {
+        return command.Action switch
+        {
+            AgentGoalAction.Get => "/goal",
+            AgentGoalAction.Clear => "/goal clear",
+            AgentGoalAction.Set => $"/goal {command.Objective}",
+            _ => "/goal",
+        };
+    }
+
     public async Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default)
     {
         if (_stdin is null || _cts.IsCancellationRequested)

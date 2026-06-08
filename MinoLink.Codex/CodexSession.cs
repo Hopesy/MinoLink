@@ -31,6 +31,7 @@ public sealed partial class CodexSession : IAgentSession
     private readonly Dictionary<string, PendingRequest> _pendingRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BackgroundTaskState> _backgroundTasks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _pendingRpcAcks = new();
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pendingRpcResults = new();
     private readonly List<TaskRecord> _tasks = [];
     private int _taskSequence;
 
@@ -189,6 +190,67 @@ public sealed partial class CodexSession : IAgentSession
         }
     }
 
+    public async Task<AgentGoalCommandResult> HandleGoalAsync(AgentGoalCommand command, CancellationToken ct = default)
+    {
+        if (_stdin is null || _cts.IsCancellationRequested)
+            return AgentGoalCommandResult.Unsupported("Codex 会话未启动，无法操作 goal。");
+        if (string.IsNullOrWhiteSpace(_sessionId))
+            return AgentGoalCommandResult.Unsupported("Codex thread 尚未就绪，无法操作 goal。");
+
+        return command.Action switch
+        {
+            AgentGoalAction.Get => await GetGoalAsync(ct),
+            AgentGoalAction.Clear => await ClearGoalAsync(ct),
+            AgentGoalAction.Set => await SetGoalAsync(command, ct),
+            _ => AgentGoalCommandResult.Unsupported("未知 goal 命令。"),
+        };
+    }
+
+    private async Task<AgentGoalCommandResult> SetGoalAsync(AgentGoalCommand command, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(command.Objective) && string.Equals(command.Status, "active", StringComparison.Ordinal))
+            return AgentGoalCommandResult.Unsupported("设置 goal 需要提供目标内容。");
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["threadId"] = _sessionId,
+            ["status"] = command.Status,
+        };
+
+        if (!string.IsNullOrWhiteSpace(command.Objective))
+            payload["objective"] = command.Objective;
+        if (command.TokenBudget is not null)
+            payload["tokenBudget"] = command.TokenBudget;
+
+        var result = await SendRequestForResultAsync("thread/goal/set", payload, ct);
+        var goal = TryReadGoal(result, out var parsed) ? parsed : null;
+        var message = goal is null
+            ? "✅ Goal 已更新。"
+            : $"✅ Goal 已更新。\n{FormatGoalSummary(goal)}";
+        return new AgentGoalCommandResult(true, false, message, goal);
+    }
+
+    private async Task<AgentGoalCommandResult> GetGoalAsync(CancellationToken ct)
+    {
+        var result = await SendRequestForResultAsync("thread/goal/get", new { threadId = _sessionId }, ct);
+        if (!TryReadGoal(result, out var goal))
+            return new AgentGoalCommandResult(true, false, "当前没有 active goal。");
+
+        return new AgentGoalCommandResult(true, false, FormatGoalSummary(goal), goal);
+    }
+
+    private async Task<AgentGoalCommandResult> ClearGoalAsync(CancellationToken ct)
+    {
+        var result = await SendRequestForResultAsync("thread/goal/clear", new { threadId = _sessionId }, ct);
+        var cleared = result.ValueKind == JsonValueKind.Object &&
+                      result.TryGetProperty("cleared", out var clearedEl) &&
+                      clearedEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                      clearedEl.GetBoolean();
+
+        return new AgentGoalCommandResult(true, false,
+            cleared ? "🧹 已清除当前 goal。" : "当前没有 active goal。");
+    }
+
     public async Task<bool> InterruptAsync(TimeSpan timeout, CancellationToken ct = default)
     {
         if (_stdin is null || _cts.IsCancellationRequested)
@@ -314,6 +376,22 @@ public sealed partial class CodexSession : IAgentSession
             {
                 var ok = !root.TryGetProperty("error", out _);
                 ack.TrySetResult(ok);
+            }
+
+            if (_pendingRpcResults.TryRemove(rpcId, out var resultCompletion))
+            {
+                if (root.TryGetProperty("error", out var error))
+                {
+                    resultCompletion.TrySetException(new InvalidOperationException(ExtractText(error)));
+                }
+                else if (root.TryGetProperty("result", out var resultEl))
+                {
+                    resultCompletion.TrySetResult(resultEl.Clone());
+                }
+                else
+                {
+                    resultCompletion.TrySetResult(default);
+                }
             }
         }
 
@@ -1390,12 +1468,79 @@ public sealed partial class CodexSession : IAgentSession
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "...";
 
+    private static bool TryReadGoal(JsonElement result, out AgentGoal goal)
+    {
+        goal = default!;
+        if (result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("goal", out var goalEl) ||
+            goalEl.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return false;
+        }
+
+        var objective = goalEl.TryGetProperty("objective", out var objectiveEl)
+            ? objectiveEl.GetString() ?? string.Empty
+            : string.Empty;
+        var status = goalEl.TryGetProperty("status", out var statusEl)
+            ? statusEl.GetString() ?? string.Empty
+            : string.Empty;
+        var tokensUsed = TryGetInt64(goalEl, "tokensUsed", out var used) ? used : 0;
+        var tokenBudget = TryGetInt64(goalEl, "tokenBudget", out var budget) ? (long?)budget : null;
+        var timeUsedSeconds = TryGetInt64(goalEl, "timeUsedSeconds", out var seconds) ? seconds : 0;
+
+        goal = new AgentGoal(objective, status, tokensUsed, tokenBudget, timeUsedSeconds);
+        return true;
+    }
+
+    private static bool TryGetInt64(JsonElement element, string propertyName, out long value)
+    {
+        value = default;
+        if (!element.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return false;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number => property.TryGetInt64(out value),
+            JsonValueKind.String => long.TryParse(property.GetString(), out value),
+            _ => false,
+        };
+    }
+
+    private static string FormatGoalSummary(AgentGoal goal)
+    {
+        var budget = goal.TokenBudget is null
+            ? goal.TokensUsed.ToString()
+            : $"{goal.TokensUsed}/{goal.TokenBudget}";
+
+        var elapsed = goal.TimeUsedSeconds > 0
+            ? $"\n**耗时**: {FormatGoalDuration(goal.TimeUsedSeconds)}"
+            : string.Empty;
+
+        return $"**Goal**: {goal.Objective}\n**状态**: {goal.Status}\n**Tokens**: {budget}{elapsed}";
+    }
+
+    private static string FormatGoalDuration(long totalSeconds)
+    {
+        var duration = TimeSpan.FromSeconds(Math.Max(0, totalSeconds));
+        if (duration.TotalHours >= 1)
+            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
+        if (duration.TotalMinutes >= 1)
+            return $"{duration.Minutes}m {duration.Seconds}s";
+        return $"{duration.Seconds}s";
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
         foreach (var ack in _pendingRpcAcks.Values)
             ack.TrySetResult(false);
         _pendingRpcAcks.Clear();
+        foreach (var result in _pendingRpcResults.Values)
+            result.TrySetCanceled();
+        _pendingRpcResults.Clear();
         if (_stdin is not null)
         {
             try { _stdin.Close(); } catch { }
@@ -1452,6 +1597,29 @@ public sealed partial class CodexSession : IAgentSession
         {
             _pendingRpcAcks.TryRemove(id, out _);
             throw;
+        }
+    }
+
+    private async Task<JsonElement> SendRequestForResultAsync(string method, object @params, CancellationToken ct)
+    {
+        if (_stdin is null)
+            throw new InvalidOperationException("会话未启动");
+
+        var id = Interlocked.Increment(ref _requestId);
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingRpcResults.TryAdd(id, completion))
+            throw new InvalidOperationException($"Codex RPC 请求 ID 冲突: {id}");
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { id, method, @params });
+            _logger.LogInformation("→ codex stdin: {Json}", payload.Length > 200 ? payload[..200] + "..." : payload);
+            await WriteLineAsync(payload, ct);
+            return await completion.Task.WaitAsync(ct);
+        }
+        finally
+        {
+            _pendingRpcResults.TryRemove(id, out _);
         }
     }
 

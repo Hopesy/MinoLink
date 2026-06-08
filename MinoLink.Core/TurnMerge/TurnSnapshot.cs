@@ -9,6 +9,7 @@ internal sealed record TurnSnapshot(
     object ReplyContext,
     bool IsGroup,
     bool ExpectFileOutput,
+    AgentGoalCommand? GoalCommand,
     int Revision,
     string PromptText,
     IReadOnlyList<MessageAttachment> Attachments);

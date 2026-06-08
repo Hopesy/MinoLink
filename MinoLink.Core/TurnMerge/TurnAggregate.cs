@@ -15,6 +15,7 @@ internal sealed class TurnAggregate
         ReplyContext = firstMessage.ReplyContext;
         IsGroup = firstMessage.IsGroup;
         ExpectFileOutput = firstMessage.ExpectFileOutput;
+        GoalCommand = firstMessage.GoalCommand;
         FirstMessageAt = firstMessage.ReceivedAt;
         LastMessageAt = firstMessage.ReceivedAt;
         Revision = 1;
@@ -32,6 +33,8 @@ internal sealed class TurnAggregate
     public bool IsGroup { get; }
 
     public bool ExpectFileOutput { get; private set; }
+
+    public AgentGoalCommand? GoalCommand { get; }
 
     public DateTimeOffset FirstMessageAt { get; }
 
@@ -56,6 +59,7 @@ internal sealed class TurnAggregate
             ReplyContext,
             IsGroup,
             ExpectFileOutput,
+            GoalCommand,
             Revision,
             BuildPromptText(),
             _attachments.ToArray());

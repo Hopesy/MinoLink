@@ -144,24 +144,59 @@ public sealed partial class Engine : IAsyncDisposable
 
         try
         {
-            // 发送消息到 Agent
-            _logger.LogInformation("[{Platform}] 发送消息到 Agent: {Content}", platform.Name,
-                msg.Content.Length > 50 ? msg.Content[..50] + "..." : msg.Content);
-            try
+            if (msg.GoalCommand is not null)
             {
-                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
+                AgentGoalCommandResult result;
+                try
+                {
+                    result = await state.AgentSession.HandleGoalAsync(msg.GoalCommand, executionCt);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("管道已关闭") || ex.Message.Contains("会话已关闭") || ex.InnerException is IOException)
+                {
+                    _logger.LogWarning("检测到管道已关闭，重建会话后重发 goal: {SessionKey}", msg.SessionKey);
+                    _states.TryRemove(msg.SessionKey, out _);
+                    session.AgentSessionId = null;
+                    var newStart = await GetOrCreateStateAsync(msg.SessionKey, session, executionCt);
+                    state = newStart.State;
+                    if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
+                        await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, executionCt);
+                    result = await state.AgentSession.HandleGoalAsync(msg.GoalCommand, executionCt);
+                }
+
+                if (!result.Handled)
+                {
+                    await platform.ReplyAsync(msg.ReplyContext, result.Message ?? "当前 Agent 不支持 `/goal`。", executionCt);
+                    return;
+                }
+
+                if (!result.StartsTurn)
+                {
+                    await platform.ReplyAsync(msg.ReplyContext, BuildGoalCommandReply(result), executionCt);
+                    return;
+                }
             }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("管道已关闭") || ex.Message.Contains("会话已关闭") || ex.InnerException is IOException)
+            else
             {
-                _logger.LogWarning("检测到管道已关闭，重建会话: {SessionKey}", msg.SessionKey);
-                _states.TryRemove(msg.SessionKey, out _);
-                session.AgentSessionId = null;
-                var newStart = await GetOrCreateStateAsync(msg.SessionKey, session, executionCt);
-                state = newStart.State;
-                if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
-                    await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, executionCt);
-                await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
+                // 发送消息到 Agent
+                _logger.LogInformation("[{Platform}] 发送消息到 Agent: {Content}", platform.Name,
+                    msg.Content.Length > 50 ? msg.Content[..50] + "..." : msg.Content);
+                try
+                {
+                    await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("管道已关闭") || ex.Message.Contains("会话已关闭") || ex.InnerException is IOException)
+                {
+                    _logger.LogWarning("检测到管道已关闭，重建会话: {SessionKey}", msg.SessionKey);
+                    _states.TryRemove(msg.SessionKey, out _);
+                    session.AgentSessionId = null;
+                    var newStart = await GetOrCreateStateAsync(msg.SessionKey, session, executionCt);
+                    state = newStart.State;
+                    if (!string.IsNullOrWhiteSpace(newStart.ConnectionNotice))
+                        await platform.ReplyAsync(msg.ReplyContext, newStart.ConnectionNotice, executionCt);
+                    await state.AgentSession.SendAsync(msg.Content, msg.Attachments, executionCt);
+                }
             }
+
             _logger.LogInformation("[{Platform}] 消息已发送，开始等待 Agent 事件流...", platform.Name);
 
             // 处理事件流
@@ -832,6 +867,7 @@ public sealed partial class Engine : IAsyncDisposable
             "stop" => await CmdStopAsync(platform, msg),
             "close" => await CmdCloseAsync(platform, msg),
             "clear" => await CmdClearAsync(platform, msg),
+            "goal" => await CmdGoalAsync(platform, msg, args),
             "resume" => await CmdResumeAsync(platform, msg),
             "switch" => await CmdSwitchAsync(platform, msg, args),
             "continue" => await CmdContinueAsync(platform, msg),
@@ -1318,6 +1354,7 @@ public sealed partial class Engine : IAsyncDisposable
                    `/stop` - 中断当前回复（协议中断，保留会话）
                    `/close` - 关闭 Agent 终端进程（彻底销毁）
                    `/clear` - 清除当前对话上下文
+                   `/goal [目标|clear|pause|resume]` - 查看/设置/清除当前会话 goal
                    `/continue` - 继续最近一次会话
                    `/resume` - 列出当前目录的历史会话
                    `/switch <序号>` - 切换到指定会话
@@ -1394,6 +1431,7 @@ public sealed partial class Engine : IAsyncDisposable
             FromName = request.Snapshot.FromName,
             Content = request.Snapshot.PromptText,
             ExpectFileOutput = request.Snapshot.ExpectFileOutput,
+            GoalCommand = request.Snapshot.GoalCommand,
             Attachments = request.Snapshot.Attachments,
             ReplyContext = request.Snapshot.ReplyContext,
             IsGroup = request.Snapshot.IsGroup,

@@ -20,6 +20,9 @@ public sealed class Message
     /// <summary>是否要求本轮输出文件路径区块并在结束后回传文件。</summary>
     public bool ExpectFileOutput { get; init; }
 
+    /// <summary>需要通过 Agent 原生 goal 协议处理的内部命令。</summary>
+    public AgentGoalCommand? GoalCommand { get; init; }
+
     /// <summary>统一附件列表。</summary>
     public IReadOnlyList<MessageAttachment> Attachments { get; init; } = [];
 

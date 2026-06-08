@@ -39,6 +39,9 @@ public interface IAgentSession : IAsyncDisposable
     /// <summary>协议级清除对话上下文。返回 true 表示成功，false 表示不支持（上层应 fallback 杀进程重建）。</summary>
     Task<bool> ClearAsync(CancellationToken ct = default);
 
+    /// <summary>处理 Agent 原生 goal 命令。Codex 走 typed RPC；其他 Agent 可选择 slash command dispatch。</summary>
+    Task<AgentGoalCommandResult> HandleGoalAsync(AgentGoalCommand command, CancellationToken ct = default);
+
     /// <summary>回复权限请求。</summary>
     Task RespondPermissionAsync(string requestId, PermissionResponse response, CancellationToken ct = default);
 

@@ -74,6 +74,44 @@ internal sealed class SessionTurnCoordinator(
         _ = Task.Run(() => FlushTurnWindowAsync(runtime, delay, delayToken, ct), CancellationToken.None);
     }
 
+    public Task<bool> RunExclusiveAsync(IPlatform platform, Message msg, SessionRecord session, CancellationToken ct)
+    {
+        var runtime = _runtimes.GetOrAdd(msg.SessionKey, static key => new TurnRuntime(key));
+        TurnExecutionRequest? request;
+        CancellationTokenSource? executionCts;
+        long executionGeneration;
+
+        lock (runtime.SyncRoot)
+        {
+            if (runtime.State is not TurnRuntimeState.Idle || runtime.Aggregate is not null)
+                return Task.FromResult(false);
+
+            runtime.Platform = platform;
+            runtime.Session = session;
+            runtime.Aggregate = new TurnAggregate(msg);
+            var snapshot = runtime.Aggregate.CreateSnapshot();
+            request = new TurnExecutionRequest(platform, session, snapshot);
+            runtime.State = TurnRuntimeState.Running;
+            executionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            runtime.ExecutionCts = executionCts;
+            executionGeneration = ++runtime.ExecutionGeneration;
+
+            logger.LogInformation("TurnExclusiveExecutionStarted: sessionKey={SessionKey}, revision={Revision}",
+                runtime.SessionKey, snapshot.Revision);
+        }
+
+        try
+        {
+            _ = Task.Run(() => ExecuteExclusiveAsync(runtime, request, executionCts, executionGeneration), CancellationToken.None);
+            return Task.FromResult(true);
+        }
+        catch
+        {
+            executionCts.Dispose();
+            throw;
+        }
+    }
+
     public Task<bool> ResetAsync(string sessionKey)
     {
         if (_runtimes.TryRemove(sessionKey, out var runtime))
@@ -148,6 +186,8 @@ internal sealed class SessionTurnCoordinator(
         {
             var disposeExecutionCts = executionCts;
             var staleExecution = false;
+            CancellationToken restartToken = default;
+            var scheduleRestart = false;
             lock (runtime.SyncRoot)
             {
                 if (runtime.ExecutionGeneration != executionGeneration)
@@ -166,6 +206,11 @@ internal sealed class SessionTurnCoordinator(
 
                 if (!staleExecution && runtime.State == TurnRuntimeState.RestartPending)
                 {
+                    runtime.WindowCts?.Cancel();
+                    runtime.WindowCts?.Dispose();
+                    runtime.WindowCts = CancellationTokenSource.CreateLinkedTokenSource(executionParentToken);
+                    restartToken = runtime.WindowCts.Token;
+                    scheduleRestart = true;
                     logger.LogInformation("TurnRestartScheduled: sessionKey={SessionKey}", runtime.SessionKey);
                 }
                 else if (!staleExecution)
@@ -177,6 +222,35 @@ internal sealed class SessionTurnCoordinator(
             }
 
             disposeExecutionCts?.Dispose();
+
+            if (scheduleRestart)
+                _ = Task.Run(() => FlushTurnWindowAsync(runtime, options.RestartDebounceWindow, restartToken, executionParentToken), CancellationToken.None);
+        }
+    }
+
+    private async Task ExecuteExclusiveAsync(
+        TurnRuntime runtime,
+        TurnExecutionRequest request,
+        CancellationTokenSource executionCts,
+        long executionGeneration)
+    {
+        try
+        {
+            await executeAsync(request, executionCts.Token);
+        }
+        finally
+        {
+            lock (runtime.SyncRoot)
+            {
+                if (runtime.ExecutionGeneration == executionGeneration)
+                {
+                    runtime.Reset();
+                    _runtimes.TryRemove(runtime.SessionKey, out _);
+                    logger.LogInformation("TurnExclusiveCompleted: sessionKey={SessionKey}", runtime.SessionKey);
+                }
+            }
+
+            executionCts.Dispose();
         }
     }
 }
